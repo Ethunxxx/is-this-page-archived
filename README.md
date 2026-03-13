@@ -2,7 +2,7 @@
 
 A minimalist Chrome extension that checks whether the current page has been archived, and lets you jump straight to the oldest available snapshot.
 
-> **Personal project** — built for my own daily use. Feel free to use, fork, or adapt it however you like.
+> **Hobby project** — created for fun and built for my own personal use. Feel free to use, fork, or adapt it however you like.
 
 ![Chrome Extension](https://img.shields.io/badge/Chrome-Extension-4285F4?logo=googlechrome&logoColor=white)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-274C77)
@@ -18,12 +18,6 @@ A minimalist Chrome extension that checks whether the current page has been arch
   - The oldest archived snapshot from **archive.today** (listed first, when available)
   - The oldest archived snapshot from the **Wayback Machine** (listed second, when available)
   - Links to submit the page to both services if no archive exists
-
-## Screenshot
-
-> _Popup states: loading → archived (one or both sources) → not archived_
-
----
 
 ## Installation
 
