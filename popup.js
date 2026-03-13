@@ -4,16 +4,21 @@ const WAYBACK_SAVE = "https://web.archive.org/save/";
 const stateLoading = document.getElementById("state-loading");
 const stateArchived = document.getElementById("state-archived");
 const stateNotArchived = document.getElementById("state-not-archived");
+const stateNa = document.getElementById("state-na");
 const stateError = document.getElementById("state-error");
 const resultsList = document.getElementById("results-list");
 const linkSaveArchive = document.getElementById("link-save-archive");
 const linkSaveWayback = document.getElementById("link-save-wayback");
 
 function showState(el) {
-  [stateLoading, stateArchived, stateNotArchived, stateError].forEach(
+  [stateLoading, stateArchived, stateNotArchived, stateNa, stateError].forEach(
     (s) => s.classList.add("hidden")
   );
   el.classList.remove("hidden");
+}
+
+function isCheckableUrl(url) {
+  return url && (url.startsWith("http://") || url.startsWith("https://"));
 }
 
 function formatDatetime(dt) {
@@ -66,6 +71,11 @@ function createResultRow(serviceName, datetime, url) {
 async function init() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return;
+
+  if (!isCheckableUrl(tab.url)) {
+    showState(stateNa);
+    return;
+  }
 
   const key = `tab_${tab.id}`;
   const data = await chrome.storage.session.get(key);
