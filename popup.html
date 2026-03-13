@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=320">
+  <style>
+    :root {
+      --platinum: #E7ECEF;
+      --dusk-blue: #274C77;
+      --steel-blue: #6096BA;
+      --icy-blue: #A3CEF1;
+      --grey-olive: #8B8C89;
+      --white: #FFFFFF;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 320px;
+      font-family: "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--platinum);
+      color: var(--dusk-blue);
+      animation: fadeIn 0.25s ease-out;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .container {
+      padding: 20px;
+    }
+
+    .card {
+      background: var(--white);
+      border-radius: 12px;
+      padding: 24px 20px;
+      text-align: center;
+    }
+
+    .title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--dusk-blue);
+      margin-bottom: 6px;
+      letter-spacing: -0.01em;
+    }
+
+    .subtitle {
+      font-size: 11px;
+      color: var(--grey-olive);
+      margin-bottom: 16px;
+    }
+
+    .url-display {
+      font-size: 11px;
+      color: var(--grey-olive);
+      margin-bottom: 18px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 260px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .message {
+      font-size: 12px;
+      color: var(--grey-olive);
+      line-height: 1.5;
+      margin-bottom: 16px;
+    }
+
+    .btn-primary {
+      display: block;
+      width: 100%;
+      padding: 12px 16px;
+      background: var(--steel-blue);
+      color: var(--white);
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.2s ease, color 0.2s ease;
+      letter-spacing: 0.01em;
+    }
+
+    .btn-primary:hover {
+      background: var(--icy-blue);
+      color: var(--dusk-blue);
+    }
+
+    .btn-primary:active {
+      transform: scale(0.98);
+    }
+
+    .secondary-links {
+      margin-top: 14px;
+      display: flex;
+      justify-content: center;
+      gap: 16px;
+    }
+
+    .link-secondary {
+      font-size: 11px;
+      color: var(--steel-blue);
+      text-decoration: none;
+      cursor: pointer;
+      transition: color 0.2s ease;
+    }
+
+    .link-secondary:hover {
+      color: var(--dusk-blue);
+    }
+
+    .loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 32px 0;
+    }
+
+    .loading .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--steel-blue);
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+
+    .loading .dot:nth-child(2) { animation-delay: 0.15s; }
+    .loading .dot:nth-child(3) { animation-delay: 0.3s; }
+
+    @keyframes pulse {
+      0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+      40% { opacity: 1; transform: scale(1); }
+    }
+
+    .hidden { display: none; }
+
+    .status-icon {
+      font-size: 28px;
+      margin-bottom: 10px;
+      line-height: 1;
+    }
+
+    .archived-date {
+      font-size: 11px;
+      color: var(--grey-olive);
+      margin-bottom: 18px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Loading State -->
+    <div id="state-loading" class="card">
+      <div class="loading">
+        <div class="dot"></div>
+        <div class="dot"></div>
+        <div class="dot"></div>
+      </div>
+      <div class="message">Checking archive&hellip;</div>
+    </div>
+
+    <!-- Archived State -->
+    <div id="state-archived" class="card hidden">
+      <div class="status-icon">&#10003;</div>
+      <div class="title">Archived</div>
+      <div id="archived-date" class="archived-date"></div>
+      <button id="btn-view" class="btn-primary">View Oldest Snapshot</button>
+      <div class="secondary-links">
+        <a id="link-archive-today" class="link-secondary" href="#">Check archive.today</a>
+      </div>
+    </div>
+
+    <!-- Not Archived State -->
+    <div id="state-not-archived" class="card hidden">
+      <div class="status-icon">&mdash;</div>
+      <div class="title">Not Archived</div>
+      <div class="message">No archive found for this page.</div>
+      <div class="secondary-links">
+        <a id="link-save-wayback" class="link-secondary" href="#">Save to Wayback Machine</a>
+        <a id="link-save-archive" class="link-secondary" href="#">Save to archive.today</a>
+      </div>
+    </div>
+
+    <!-- Error State -->
+    <div id="state-error" class="card hidden">
+      <div class="status-icon">!</div>
+      <div class="title">Check Failed</div>
+      <div class="message">Could not reach the archive service.</div>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

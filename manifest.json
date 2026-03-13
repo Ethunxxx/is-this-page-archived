@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Is This Page Archived?",
+  "version": "1.0.0",
+  "description": "Check if the current page has been archived and quickly jump to the oldest snapshot via the Wayback Machine.",
+  "permissions": ["activeTab", "tabs", "storage"],
+  "host_permissions": [
+    "https://web.archive.org/*",
+    "https://archive.today/*",
+    "https://archive.ph/*",
+    "https://archive.is/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    },
+    "default_title": "Is This Page Archived?"
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  }
+}
