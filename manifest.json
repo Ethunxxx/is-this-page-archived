@@ -1,14 +1,15 @@
 {
   "manifest_version": 3,
   "name": "Is This Page Archived?",
-  "version": "1.0.0",
-  "description": "Check if the current page has been archived and quickly jump to the oldest snapshot via the Wayback Machine.",
+  "version": "1.1.0",
+  "description": "Check if the current page has been archived on archive.today or the Wayback Machine and jump to the oldest snapshot.",
   "permissions": ["activeTab", "tabs", "storage"],
   "host_permissions": [
     "https://web.archive.org/*",
     "https://archive.today/*",
     "https://archive.ph/*",
-    "https://archive.is/*"
+    "https://archive.is/*",
+    "https://archive.md/*"
   ],
   "background": {
     "service_worker": "background.js"

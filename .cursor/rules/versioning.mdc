@@ -1,0 +1,15 @@
+---
+description: Version bumping rules for manifest.json
+globs: manifest.json
+alwaysApply: false
+---
+
+# Extension Versioning
+
+Always increment the `version` field in `manifest.json` using semantic versioning (`MAJOR.MINOR.PATCH`) when making changes:
+
+- **PATCH** (`1.0.0` → `1.0.1`): Bug fixes, copy changes, minor style tweaks
+- **MINOR** (`1.0.0` → `1.1.0`): New features or behaviour that are backwards compatible (e.g. adding a new archive source, new popup state)
+- **MAJOR** (`1.0.0` → `2.0.0`): Breaking changes or full rewrites
+
+Never leave the version unchanged after making functional edits to the extension.

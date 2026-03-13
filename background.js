@@ -1,3 +1,4 @@
+const ARCHIVE_TODAY_TIMEMAP = "https://archive.ph/timemap/";
 const CDX_API = "https://web.archive.org/cdx/search/cdx";
 const BADGE_COLOR = "#274C77";
 const FETCH_TIMEOUT_MS = 10000;
@@ -8,7 +9,68 @@ function isCheckableUrl(url) {
   return url && (url.startsWith("http://") || url.startsWith("https://"));
 }
 
-async function checkArchive(url, tabId) {
+function makeAbortable() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  return { signal: controller.signal, clearTimer: () => clearTimeout(timer) };
+}
+
+async function checkArchiveToday(url) {
+  const { signal, clearTimer } = makeAbortable();
+  try {
+    const resp = await fetch(ARCHIVE_TODAY_TIMEMAP + url, { signal });
+    clearTimer();
+    if (!resp.ok) return null;
+
+    const text = await resp.text();
+    const firstMatch = text.match(
+      /<([^>]+)>;\s*rel="first memento";\s*datetime="([^"]+)"/
+    );
+    if (!firstMatch) return null;
+
+    return { url: firstMatch[1], datetime: firstMatch[2] };
+  } catch {
+    clearTimer();
+    return null;
+  }
+}
+
+async function checkWayback(url) {
+  const { signal, clearTimer } = makeAbortable();
+  try {
+    const params = new URLSearchParams({
+      url,
+      output: "json",
+      limit: "1",
+      fl: "timestamp,original",
+      sort: "oldest",
+    });
+    const resp = await fetch(`${CDX_API}?${params}`, { signal });
+    clearTimer();
+    if (!resp.ok) return null;
+
+    const data = await resp.json();
+    if (!Array.isArray(data) || data.length < 2) return null;
+
+    const [timestamp, original] = data[1];
+    return {
+      url: `https://web.archive.org/web/${timestamp}/${original}`,
+      datetime: formatWaybackTimestamp(timestamp),
+    };
+  } catch {
+    clearTimer();
+    return null;
+  }
+}
+
+function formatWaybackTimestamp(ts) {
+  if (!ts || ts.length < 14) return ts;
+  const d = `${ts.slice(0, 4)}-${ts.slice(4, 6)}-${ts.slice(6, 8)}`;
+  const t = `${ts.slice(8, 10)}:${ts.slice(10, 12)}:${ts.slice(12, 14)}`;
+  return new Date(`${d}T${t}Z`).toUTCString();
+}
+
+async function checkBoth(url, tabId) {
   if (!isCheckableUrl(url)) {
     clearBadge(tabId);
     storeResult(tabId, null);
@@ -23,52 +85,17 @@ async function checkArchive(url, tabId) {
 
   setBadgeLoading(tabId);
 
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  const [archiveToday, wayback] = await Promise.all([
+    checkArchiveToday(url),
+    checkWayback(url),
+  ]);
 
-    const params = new URLSearchParams({
-      url: url,
-      output: "json",
-      limit: "1",
-      fl: "timestamp,original",
-      sort: "oldest",
-    });
+  const archived = !!(archiveToday || wayback);
+  const result = { archived, archiveToday, wayback, pageUrl: url };
 
-    const response = await fetch(`${CDX_API}?${params}`, {
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
-    const hasSnapshot = Array.isArray(data) && data.length > 1;
-
-    let result;
-    if (hasSnapshot) {
-      const [timestamp, original] = data[1];
-      const waybackUrl = `https://web.archive.org/web/${timestamp}/${original}`;
-      result = {
-        archived: true,
-        waybackUrl,
-        timestamp,
-        original,
-        pageUrl: url,
-      };
-    } else {
-      result = { archived: false, pageUrl: url };
-    }
-
-    cache.set(url, result);
-    pruneCache();
-    applyResult(tabId, result);
-  } catch (e) {
-    clearBadge(tabId);
-    storeResult(tabId, { archived: false, error: true, pageUrl: url });
-  }
+  cache.set(url, result);
+  pruneCache();
+  applyResult(tabId, result);
 }
 
 function applyResult(tabId, result) {
@@ -106,7 +133,7 @@ function debouncedCheck(url, tabId) {
 
   const timer = setTimeout(() => {
     debounceTimers.delete(tabId);
-    checkArchive(url, tabId);
+    checkBoth(url, tabId);
   }, 300);
   debounceTimers.set(tabId, timer);
 }
