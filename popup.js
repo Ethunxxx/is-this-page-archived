@@ -78,16 +78,34 @@ async function init() {
   }
 
   const key = `tab_${tab.id}`;
-  const data = await chrome.storage.session.get(key);
-  const result = data[key];
 
-  if (!result) {
-    showState(stateLoading);
-    pollForResult(key, tab.url);
+  // Subscribe to storage changes BEFORE the initial read, so a result
+  // landing between the read and the subscription isn't missed.
+  let resolved = false;
+  let timeoutId = null;
+  const finalize = (result) => {
+    if (resolved) return;
+    resolved = true;
+    chrome.storage.onChanged.removeListener(onChange);
+    if (timeoutId) clearTimeout(timeoutId);
+    if (result) renderResult(result);
+    else showState(stateError);
+  };
+  const onChange = (changes, area) => {
+    if (area !== "session") return;
+    const change = changes[key];
+    if (change && change.newValue) finalize(change.newValue);
+  };
+  chrome.storage.onChanged.addListener(onChange);
+
+  const data = await chrome.storage.session.get(key);
+  if (data[key]) {
+    finalize(data[key]);
     return;
   }
 
-  renderResult(result);
+  showState(stateLoading);
+  timeoutId = setTimeout(() => finalize(null), 12000);
 }
 
 function renderResult(result) {
@@ -121,23 +139,6 @@ function renderResult(result) {
   }
 
   showState(stateArchived);
-}
-
-function pollForResult(key, pageUrl, attempts = 0) {
-  if (attempts > 20) {
-    showState(stateError);
-    return;
-  }
-
-  setTimeout(async () => {
-    const data = await chrome.storage.session.get(key);
-    const result = data[key];
-    if (result) {
-      renderResult(result);
-    } else {
-      pollForResult(key, pageUrl, attempts + 1);
-    }
-  }, 500);
 }
 
 init();
