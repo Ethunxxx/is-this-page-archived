@@ -15,6 +15,28 @@ function makeAbortable() {
   return { signal: controller.signal, clearTimer: () => clearTimeout(timer) };
 }
 
+function normalizeUrl(u) {
+  try {
+    const parsed = new URL(u);
+    parsed.hash = "";
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    let pathname = parsed.pathname;
+    if (pathname.length > 1) pathname = pathname.replace(/\/+$/, "");
+    return `${parsed.protocol}//${host}${pathname}${parsed.search}`;
+  } catch {
+    return String(u).toLowerCase();
+  }
+}
+
+function urlsMatch(a, b) {
+  return normalizeUrl(a) === normalizeUrl(b);
+}
+
+function extractOriginalFromMementoUrl(mementoUrl) {
+  const m = mementoUrl.match(/\/(https?:\/\/.+)$/);
+  return m ? m[1] : null;
+}
+
 async function checkArchiveToday(url) {
   const { signal, clearTimer } = makeAbortable();
   try {
@@ -23,10 +45,23 @@ async function checkArchiveToday(url) {
     if (!resp.ok) return null;
 
     const text = await resp.text();
+
+    // archive.today's timemap can return mementos for a different URL
+    // than the one requested (typically the host root) when no exact
+    // match exists. Per RFC 7089 the response advertises the URL it is
+    // really about via rel="original"; reject anything that doesn't match.
+    const originalMatch = text.match(/<([^>]+)>;\s*rel="original"/);
+    if (originalMatch && !urlsMatch(originalMatch[1], url)) return null;
+
     const firstMatch = text.match(
       /<([^>]+)>;\s*rel="first memento";\s*datetime="([^"]+)"/
     );
     if (!firstMatch) return null;
+
+    // Defence in depth: confirm the memento URL itself embeds the URL
+    // we asked for, in case the rel="original" line is missing.
+    const embedded = extractOriginalFromMementoUrl(firstMatch[1]);
+    if (embedded && !urlsMatch(embedded, url)) return null;
 
     return { url: firstMatch[1], datetime: firstMatch[2] };
   } catch {
@@ -53,6 +88,8 @@ async function checkWayback(url) {
     if (!Array.isArray(data) || data.length < 2) return null;
 
     const [timestamp, original] = data[1];
+    if (!urlsMatch(original, url)) return null;
+
     return {
       url: `https://web.archive.org/web/${timestamp}/${original}`,
       datetime: formatWaybackTimestamp(timestamp),
