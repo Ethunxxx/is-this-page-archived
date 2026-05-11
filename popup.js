@@ -23,16 +23,13 @@ function isCheckableUrl(url) {
 
 function formatDatetime(dt) {
   if (!dt) return "";
-  try {
-    const d = new Date(dt);
-    return d.toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
-  } catch {
-    return dt;
-  }
+  const d = new Date(dt);
+  if (isNaN(d.getTime())) return dt;
+  return d.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
 }
 
 function openUrl(url) {
@@ -70,7 +67,10 @@ function createResultRow(serviceName, datetime, url) {
 
 async function init() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab) return;
+  if (!tab) {
+    showState(stateError);
+    return;
+  }
 
   if (!isCheckableUrl(tab.url)) {
     showState(stateNa);
@@ -94,7 +94,9 @@ async function init() {
   const onChange = (changes, area) => {
     if (area !== "session") return;
     const change = changes[key];
-    if (change && change.newValue) finalize(change.newValue);
+    // Fire on any newValue, including null — a null write means the tab
+    // moved to a non-checkable URL, which finalize() resolves to error.
+    if (change && "newValue" in change) finalize(change.newValue);
   };
   chrome.storage.onChanged.addListener(onChange);
 
@@ -109,16 +111,35 @@ async function init() {
 }
 
 function renderResult(result) {
+  if (result.error) {
+    showState(stateError);
+    return;
+  }
   if (!result.archived && !result.archiveToday && !result.wayback) {
     if (result.pageUrl) {
-      linkSaveArchive.addEventListener("click", (e) => {
-        e.preventDefault();
-        openUrl(`${ARCHIVE_TODAY}/?url=${encodeURIComponent(result.pageUrl)}`);
-      });
-      linkSaveWayback.addEventListener("click", (e) => {
-        e.preventDefault();
-        openUrl(WAYBACK_SAVE + result.pageUrl);
-      });
+      const invalidate = () => {
+        chrome.runtime
+          .sendMessage({ type: "invalidate", url: result.pageUrl })
+          .catch(() => {});
+      };
+      linkSaveArchive.addEventListener(
+        "click",
+        (e) => {
+          e.preventDefault();
+          invalidate();
+          openUrl(`${ARCHIVE_TODAY}/?url=${encodeURIComponent(result.pageUrl)}`);
+        },
+        { once: true }
+      );
+      linkSaveWayback.addEventListener(
+        "click",
+        (e) => {
+          e.preventDefault();
+          invalidate();
+          openUrl(WAYBACK_SAVE + encodeURIComponent(result.pageUrl));
+        },
+        { once: true }
+      );
     }
     showState(stateNotArchived);
     return;

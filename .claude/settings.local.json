@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node --check \"C:\\\\Users\\\\richa\\\\Documents\\\\is-this-page-archived\\\\background.js\")",
+      "Bash(node --check \"C:\\\\Users\\\\richa\\\\Documents\\\\is-this-page-archived\\\\popup.js\")",
+      "Bash(node -e \"JSON.parse\\(require\\('fs'\\).readFileSync\\('C:/Users/richa/Documents/is-this-page-archived/manifest.json','utf8'\\)\\); console.log\\('manifest OK'\\)\")"
+    ]
+  }
+}

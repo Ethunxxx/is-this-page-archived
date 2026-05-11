@@ -6,10 +6,8 @@
   "permissions": ["activeTab", "tabs", "storage"],
   "host_permissions": [
     "https://web.archive.org/*",
-    "https://archive.today/*",
     "https://archive.ph/*",
-    "https://archive.is/*",
-    "https://archive.md/*"
+    "https://archive.today/*"
   ],
   "background": {
     "service_worker": "background.js"
