@@ -17,8 +17,45 @@ function showState(el) {
   el.classList.remove("hidden");
 }
 
+function isPrivateHost(hostname) {
+  if (!hostname) return true;
+  const h = hostname.toLowerCase();
+  if (h === "localhost") return true;
+  if (
+    h.endsWith(".localhost") ||
+    h.endsWith(".local") ||
+    h.endsWith(".internal") ||
+    h.endsWith(".intranet") ||
+    h.endsWith(".lan") ||
+    h.endsWith(".test") ||
+    h.endsWith(".example") ||
+    h.endsWith(".invalid")
+  ) {
+    return true;
+  }
+  if (h === "::1" || h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe80:")) {
+    return true;
+  }
+  const ip = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ip) {
+    const a = Number(ip[1]);
+    const b = Number(ip[2]);
+    if (a === 0 || a === 10 || a === 127) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 169 && b === 254) return true;
+  }
+  return false;
+}
+
 function isCheckableUrl(url) {
-  return url && (url.startsWith("http://") || url.startsWith("https://"));
+  if (!url) return false;
+  if (!url.startsWith("http://") && !url.startsWith("https://")) return false;
+  try {
+    return !isPrivateHost(new URL(url).hostname);
+  } catch {
+    return false;
+  }
 }
 
 function formatDatetime(dt) {
@@ -65,6 +102,76 @@ function createResultRow(serviceName, datetime, url) {
   return row;
 }
 
+let activeCheck = null;
+let saveLinksWired = false;
+
+function performCheck(tab, { force }) {
+  // Tear down any previous check so a Recheck click can't double-listen.
+  if (activeCheck) activeCheck.cancel();
+
+  const key = `tab_${tab.id}`;
+  const me = Symbol("check");
+  let resolved = false;
+  let timeoutId = null;
+  const teardown = () => {
+    if (resolved) return;
+    resolved = true;
+    chrome.storage.onChanged.removeListener(onChange);
+    if (timeoutId) clearTimeout(timeoutId);
+  };
+  const finalize = (result) => {
+    if (resolved) return;
+    teardown();
+    if (activeCheck && activeCheck.id === me) activeCheck = null;
+    if (result) renderResult(result);
+    else showState(stateError);
+  };
+  const onChange = (changes, area) => {
+    if (area !== "session") return;
+    const change = changes[key];
+    // Fire on any newValue, including null — a null write means the tab
+    // moved to a non-checkable URL, which finalize() resolves to error.
+    if (change && "newValue" in change) finalize(change.newValue);
+  };
+  // cancel tears down silently — a superseding Recheck shouldn't flash
+  // the error state on its way to showing the new loading state.
+  activeCheck = { id: me, cancel: teardown };
+  chrome.storage.onChanged.addListener(onChange);
+
+  const startNetworkCheck = () => {
+    if (resolved) return;
+    showState(stateLoading);
+    // Tell the service worker to run the check. Without this, a cold-
+    // respawned SW with no pending tab event would never check this tab
+    // and the popup would just sit on the loading state until the 12s
+    // timeout. The force flag is only set by the Recheck button.
+    chrome.runtime
+      .sendMessage({ type: "check", tabId: tab.id, url: tab.url, force: !!force })
+      .catch(() => {});
+    timeoutId = setTimeout(() => finalize(null), 12000);
+  };
+
+  if (force) {
+    startNetworkCheck();
+    return;
+  }
+
+  chrome.storage.session.get(key).then((data) => {
+    if (resolved) return;
+    if (data[key]) finalize(data[key]);
+    else startNetworkCheck();
+  });
+}
+
+function wireRecheck(tab) {
+  document.querySelectorAll(".btn-recheck").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      performCheck(tab, { force: true });
+    });
+  });
+}
+
 async function init() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) {
@@ -77,37 +184,8 @@ async function init() {
     return;
   }
 
-  const key = `tab_${tab.id}`;
-
-  // Subscribe to storage changes BEFORE the initial read, so a result
-  // landing between the read and the subscription isn't missed.
-  let resolved = false;
-  let timeoutId = null;
-  const finalize = (result) => {
-    if (resolved) return;
-    resolved = true;
-    chrome.storage.onChanged.removeListener(onChange);
-    if (timeoutId) clearTimeout(timeoutId);
-    if (result) renderResult(result);
-    else showState(stateError);
-  };
-  const onChange = (changes, area) => {
-    if (area !== "session") return;
-    const change = changes[key];
-    // Fire on any newValue, including null — a null write means the tab
-    // moved to a non-checkable URL, which finalize() resolves to error.
-    if (change && "newValue" in change) finalize(change.newValue);
-  };
-  chrome.storage.onChanged.addListener(onChange);
-
-  const data = await chrome.storage.session.get(key);
-  if (data[key]) {
-    finalize(data[key]);
-    return;
-  }
-
-  showState(stateLoading);
-  timeoutId = setTimeout(() => finalize(null), 12000);
+  wireRecheck(tab);
+  performCheck(tab, { force: false });
 }
 
 function renderResult(result) {
@@ -116,30 +194,24 @@ function renderResult(result) {
     return;
   }
   if (!result.archived && !result.archiveToday && !result.wayback) {
-    if (result.pageUrl) {
+    if (result.pageUrl && !saveLinksWired) {
+      saveLinksWired = true;
+      const pageUrl = result.pageUrl;
       const invalidate = () => {
         chrome.runtime
-          .sendMessage({ type: "invalidate", url: result.pageUrl })
+          .sendMessage({ type: "invalidate", url: pageUrl })
           .catch(() => {});
       };
-      linkSaveArchive.addEventListener(
-        "click",
-        (e) => {
-          e.preventDefault();
-          invalidate();
-          openUrl(`${ARCHIVE_TODAY}/?url=${encodeURIComponent(result.pageUrl)}`);
-        },
-        { once: true }
-      );
-      linkSaveWayback.addEventListener(
-        "click",
-        (e) => {
-          e.preventDefault();
-          invalidate();
-          openUrl(WAYBACK_SAVE + encodeURIComponent(result.pageUrl));
-        },
-        { once: true }
-      );
+      linkSaveArchive.addEventListener("click", (e) => {
+        e.preventDefault();
+        invalidate();
+        openUrl(`${ARCHIVE_TODAY}/?url=${encodeURIComponent(pageUrl)}`);
+      });
+      linkSaveWayback.addEventListener("click", (e) => {
+        e.preventDefault();
+        invalidate();
+        openUrl(WAYBACK_SAVE + encodeURIComponent(pageUrl));
+      });
     }
     showState(stateNotArchived);
     return;

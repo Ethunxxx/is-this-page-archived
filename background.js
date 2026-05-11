@@ -11,9 +11,75 @@ const ARCHIVE_TODAY_HOSTS = new Set([
 ]);
 
 const cache = new Map();
+const inflight = new Map();
+
+function silent(promise) {
+  if (promise && typeof promise.catch === "function") promise.catch(() => {});
+}
+
+function isPrivateHost(hostname) {
+  if (!hostname) return true;
+  const h = hostname.toLowerCase();
+  if (h === "localhost") return true;
+  if (
+    h.endsWith(".localhost") ||
+    h.endsWith(".local") ||
+    h.endsWith(".internal") ||
+    h.endsWith(".intranet") ||
+    h.endsWith(".lan") ||
+    h.endsWith(".test") ||
+    h.endsWith(".example") ||
+    h.endsWith(".invalid")
+  ) {
+    return true;
+  }
+  if (h === "::1" || h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe80:")) {
+    return true;
+  }
+  const ip = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ip) {
+    const a = Number(ip[1]);
+    const b = Number(ip[2]);
+    if (a === 0 || a === 10 || a === 127) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 169 && b === 254) return true;
+  }
+  return false;
+}
 
 function isCheckableUrl(url) {
-  return url && (url.startsWith("http://") || url.startsWith("https://"));
+  if (!url) return false;
+  if (!url.startsWith("http://") && !url.startsWith("https://")) return false;
+  try {
+    return !isPrivateHost(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function cacheKey(url) {
+  return normalizeUrl(url);
+}
+
+function cacheGet(url) {
+  const key = cacheKey(url);
+  const entry = cache.get(key);
+  if (entry === undefined) return undefined;
+  // Touch: re-insert to mark as most recently used so pruneCache evicts
+  // cold entries first.
+  cache.delete(key);
+  cache.set(key, entry);
+  return entry;
+}
+
+function cacheSet(url, entry) {
+  cache.set(cacheKey(url), entry);
+  pruneCache();
+}
+
+function cacheDelete(url) {
+  cache.delete(cacheKey(url));
 }
 
 function makeAbortable() {
@@ -60,8 +126,11 @@ async function checkArchiveToday(url) {
   try {
     const resp = await fetch(ARCHIVE_TODAY_TIMEMAP + encodeURIComponent(url), { signal });
     clearTimer();
-    // 4xx: treat as "no snapshot" (cacheable). 5xx: treat as a transient
-    // failure so the caller can skip caching and retry next visit.
+    // 408/425/429: rate-limit / try-again — transient. 5xx: transient.
+    // Other 4xx: treat as "no snapshot" (cacheable).
+    if (resp.status === 408 || resp.status === 425 || resp.status === 429) {
+      throw new Error(`archive.today HTTP ${resp.status}`);
+    }
     if (resp.status >= 400 && resp.status < 500) return null;
     if (!resp.ok) throw new Error(`archive.today HTTP ${resp.status}`);
 
@@ -119,6 +188,9 @@ async function checkWayback(url) {
     });
     const resp = await fetch(`${CDX_API}?${params}`, { signal });
     clearTimer();
+    if (resp.status === 408 || resp.status === 425 || resp.status === 429) {
+      throw new Error(`wayback HTTP ${resp.status}`);
+    }
     if (resp.status >= 400 && resp.status < 500) return null;
     if (!resp.ok) throw new Error(`wayback HTTP ${resp.status}`);
 
@@ -153,7 +225,7 @@ async function checkBoth(url, tabId) {
     return;
   }
 
-  const cached = cache.get(url);
+  const cached = cacheGet(url);
   if (cached && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
     await applyResultIfStillCurrent(tabId, url, cached.value);
     return;
@@ -161,6 +233,20 @@ async function checkBoth(url, tabId) {
 
   setBadgeLoading(tabId);
 
+  // Share a single in-flight fetch across concurrent callers asking about
+  // the same (normalized) URL — e.g. two tabs on the same page.
+  const key = cacheKey(url);
+  let pending = inflight.get(key);
+  if (!pending) {
+    pending = fetchBoth(url).finally(() => inflight.delete(key));
+    inflight.set(key, pending);
+  }
+  const result = await pending;
+
+  await applyResultIfStillCurrent(tabId, url, result);
+}
+
+async function fetchBoth(url) {
   const [archiveSettled, waybackSettled] = await Promise.allSettled([
     checkArchiveToday(url),
     checkWayback(url),
@@ -186,11 +272,10 @@ async function checkBoth(url, tabId) {
     archiveSettled.status === "fulfilled" &&
     waybackSettled.status === "fulfilled"
   ) {
-    cache.set(url, { value: result, cachedAt: Date.now() });
-    pruneCache();
+    cacheSet(url, { value: result, cachedAt: Date.now() });
   }
 
-  await applyResultIfStillCurrent(tabId, url, result);
+  return result;
 }
 
 async function applyResultIfStillCurrent(tabId, url, result) {
@@ -203,9 +288,9 @@ async function applyResultIfStillCurrent(tabId, url, result) {
 
 function applyResult(tabId, result) {
   if (result && result.archived) {
-    chrome.action.setBadgeText({ text: "✓", tabId });
-    chrome.action.setBadgeBackgroundColor({ color: BADGE_COLOR, tabId });
-    chrome.action.setBadgeTextColor({ color: "#FFFFFF", tabId });
+    silent(chrome.action.setBadgeText({ text: "✓", tabId }));
+    silent(chrome.action.setBadgeBackgroundColor({ color: BADGE_COLOR, tabId }));
+    silent(chrome.action.setBadgeTextColor({ color: "#FFFFFF", tabId }));
   } else {
     clearBadge(tabId);
   }
@@ -213,19 +298,19 @@ function applyResult(tabId, result) {
 }
 
 function clearBadge(tabId) {
-  chrome.action.setBadgeText({ text: "", tabId });
+  silent(chrome.action.setBadgeText({ text: "", tabId }));
 }
 
 function setBadgeLoading(tabId) {
-  chrome.action.setBadgeText({ text: "…", tabId });
-  chrome.action.setBadgeBackgroundColor({ color: "#8B8C89", tabId });
-  chrome.action.setBadgeTextColor({ color: "#FFFFFF", tabId });
+  silent(chrome.action.setBadgeText({ text: "…", tabId }));
+  silent(chrome.action.setBadgeBackgroundColor({ color: "#8B8C89", tabId }));
+  silent(chrome.action.setBadgeTextColor({ color: "#FFFFFF", tabId }));
 }
 
 function storeResult(tabId, result) {
   const data = {};
   data[`tab_${tabId}`] = result;
-  chrome.storage.session.set(data);
+  silent(chrome.storage.session.set(data));
 }
 
 const debounceTimers = new Map();
@@ -251,7 +336,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
   try {
     const tab = await chrome.tabs.get(activeInfo.tabId);
     if (!tab.url) return;
-    const cached = cache.get(tab.url);
+    const cached = cacheGet(tab.url);
     if (cached && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
       applyResult(tab.id, cached.value);
     } else {
@@ -266,15 +351,27 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   const pending = debounceTimers.get(tabId);
   if (pending) clearTimeout(pending);
   debounceTimers.delete(tabId);
-  chrome.storage.session.remove(`tab_${tabId}`);
+  silent(chrome.storage.session.remove(`tab_${tabId}`));
 });
 
 chrome.runtime.onMessage.addListener((msg) => {
-  // The popup calls this after the user clicks a "Save to ..." link so
-  // the next visit re-checks the archive instead of hitting the cached
-  // "not archived" result.
-  if (msg && msg.type === "invalidate" && typeof msg.url === "string") {
-    cache.delete(msg.url);
+  if (!msg) return;
+  // The popup calls "invalidate" after the user clicks a "Save to ..." link
+  // so the next visit re-checks instead of hitting the cached "not archived".
+  if (msg.type === "invalidate" && typeof msg.url === "string") {
+    cacheDelete(msg.url);
+    return;
+  }
+  // The popup calls "check" on open so a cold-respawned service worker
+  // doesn't sit idle waiting for an event that won't fire. The force flag
+  // is used by the Recheck button to bypass any cached result.
+  if (
+    msg.type === "check" &&
+    typeof msg.url === "string" &&
+    typeof msg.tabId === "number"
+  ) {
+    if (msg.force) cacheDelete(msg.url);
+    debouncedCheck(msg.url, msg.tabId);
   }
 });
 
