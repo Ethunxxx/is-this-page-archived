@@ -53,17 +53,26 @@ async function checkArchiveToday(url) {
     const originalMatch = text.match(/<([^>]+)>;\s*rel="original"/);
     if (originalMatch && !urlsMatch(originalMatch[1], url)) return null;
 
-    const firstMatch = text.match(
-      /<([^>]+)>;\s*rel="first memento";\s*datetime="([^"]+)"/
-    );
-    if (!firstMatch) return null;
+    // The rel attribute is a space-separated token list (RFC 5988). When a
+    // URL has only one snapshot, archive.today returns rel="first last
+    // memento" rather than rel="first memento", so match by token presence.
+    let firstMemento = null;
+    const linkRe = /<([^>]+)>;\s*rel="([^"]+)";\s*datetime="([^"]+)"/g;
+    for (const m of text.matchAll(linkRe)) {
+      const tokens = m[2].split(/\s+/);
+      if (tokens.includes("memento") && tokens.includes("first")) {
+        firstMemento = { url: m[1], datetime: m[3] };
+        break;
+      }
+    }
+    if (!firstMemento) return null;
 
     // Defence in depth: confirm the memento URL itself embeds the URL
     // we asked for, in case the rel="original" line is missing.
-    const embedded = extractOriginalFromMementoUrl(firstMatch[1]);
+    const embedded = extractOriginalFromMementoUrl(firstMemento.url);
     if (embedded && !urlsMatch(embedded, url)) return null;
 
-    return { url: firstMatch[1], datetime: firstMatch[2] };
+    return firstMemento;
   } catch {
     clearTimer();
     return null;
