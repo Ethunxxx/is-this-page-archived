@@ -255,7 +255,11 @@ async function fetchBoth(url) {
   const archiveToday = archiveSettled.status === "fulfilled" ? archiveSettled.value : null;
   const wayback = waybackSettled.status === "fulfilled" ? waybackSettled.value : null;
   const archived = !!(archiveToday || wayback);
-  const result = { archived, archiveToday, wayback, pageUrl: url };
+  // checkedAt makes each fresh result a distinct value so a Recheck that
+  // returns the same snapshots still triggers chrome.storage.onChanged in
+  // the popup — Chrome suppresses the event when the new value equals the
+  // existing one.
+  const result = { archived, archiveToday, wayback, pageUrl: url, checkedAt: Date.now() };
 
   // If both upstream checks errored, surface that to the popup instead of
   // pretending we know there's no archive.
