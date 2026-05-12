@@ -67,9 +67,11 @@ The badge is set per-tab via `chrome.action.setBadgeText`:
 
 | State | Badge |
 |---|---|
-| Checking | Grey `…` |
+| Checking | Grey `?` |
 | Archived (either source) | Dusk Blue `✓` |
-| Not archived / error / non-checkable URL | _(no badge)_ |
+| Not archived | Steel Blue `✕` |
+| Non-checkable URL (non-HTTP(S), private/local, or archive service) | _(no badge)_ |
+| Error | Red `✕` |
 
 ### Popup states
 
@@ -79,7 +81,7 @@ The badge is set per-tab via `chrome.action.setBadgeText`:
 | Archived | At least one service returned a valid snapshot |
 | Not Archived | Both services succeeded and neither had a snapshot — also shows "Save to…" links |
 | Check Failed | Both upstream calls errored, or the popup timed out after 12s |
-| No Page to Check | The active tab isn't an HTTP(S) URL, or is on a private/local host |
+| No Page to Check | The active tab isn't an HTTP(S) URL, is on a private/local host, or is already on an archive service |
 
 ### Caching
 
@@ -118,6 +120,12 @@ URLs on private or local hosts are **never sent to either archive service**. The
 - IPv6 unique-local (`fc00::/7` — `fc*`/`fd*`)
 
 Non-HTTP(S) URLs (`chrome://`, `file://`, etc.) are also skipped.
+
+Archive service URLs are skipped too, since checking an archive page for an
+archive of itself is not useful:
+
+- `archive.ph`, `archive.today`, `archive.is`, `archive.md`
+- `web.archive.org`
 
 ---
 

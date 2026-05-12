@@ -1,5 +1,12 @@
 const ARCHIVE_TODAY = "https://archive.ph";
 const WAYBACK_SAVE = "https://web.archive.org/save/";
+const ARCHIVE_SERVICE_HOSTS = new Set([
+  "archive.ph",
+  "archive.today",
+  "archive.is",
+  "archive.md",
+  "web.archive.org",
+]);
 
 const stateLoading = document.getElementById("state-loading");
 const stateArchived = document.getElementById("state-archived");
@@ -48,11 +55,16 @@ function isPrivateHost(hostname) {
   return false;
 }
 
+function isArchiveServiceHost(hostname) {
+  return ARCHIVE_SERVICE_HOSTS.has(hostname.toLowerCase());
+}
+
 function isCheckableUrl(url) {
   if (!url) return false;
   if (!url.startsWith("http://") && !url.startsWith("https://")) return false;
   try {
-    return !isPrivateHost(new URL(url).hostname);
+    const hostname = new URL(url).hostname;
+    return !isPrivateHost(hostname) && !isArchiveServiceHost(hostname);
   } catch {
     return false;
   }

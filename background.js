@@ -1,6 +1,10 @@
 const ARCHIVE_TODAY_TIMEMAP = "https://archive.ph/timemap/";
 const CDX_API = "https://web.archive.org/cdx/search/cdx";
 const BADGE_COLOR = "#274C77";
+const BADGE_NOT_ARCHIVED_COLOR = "#6096BA";
+const BADGE_CHECKING_COLOR = "#8B8C89";
+const BADGE_ERROR_COLOR = "#C1121F";
+const BADGE_TEXT_COLOR = "#FFFFFF";
 const FETCH_TIMEOUT_MS = 10000;
 const CACHE_TTL_MS = 60 * 60 * 1000;
 const ARCHIVE_TODAY_HOSTS = new Set([
@@ -8,6 +12,10 @@ const ARCHIVE_TODAY_HOSTS = new Set([
   "archive.today",
   "archive.is",
   "archive.md",
+]);
+const ARCHIVE_SERVICE_HOSTS = new Set([
+  ...ARCHIVE_TODAY_HOSTS,
+  "web.archive.org",
 ]);
 const TRACKING_QUERY_PARAMS = new Set([
   "dclid",
@@ -63,11 +71,16 @@ function isPrivateHost(hostname) {
   return false;
 }
 
+function isArchiveServiceHost(hostname) {
+  return ARCHIVE_SERVICE_HOSTS.has(hostname.toLowerCase());
+}
+
 function isCheckableUrl(url) {
   if (!url) return false;
   if (!url.startsWith("http://") && !url.startsWith("https://")) return false;
   try {
-    return !isPrivateHost(new URL(url).hostname);
+    const hostname = new URL(url).hostname;
+    return !isPrivateHost(hostname) && !isArchiveServiceHost(hostname);
   } catch {
     return false;
   }
@@ -357,14 +370,22 @@ async function applyResultIfStillCurrent(tabId, url, result) {
 }
 
 function applyResult(tabId, result) {
-  if (result && result.archived) {
-    silent(chrome.action.setBadgeText({ text: "✓", tabId }));
-    silent(chrome.action.setBadgeBackgroundColor({ color: BADGE_COLOR, tabId }));
-    silent(chrome.action.setBadgeTextColor({ color: "#FFFFFF", tabId }));
+  if (result && result.error) {
+    setBadge(tabId, "✕", BADGE_ERROR_COLOR);
+  } else if (result && result.archived) {
+    setBadge(tabId, "✓", BADGE_COLOR);
+  } else if (result) {
+    setBadge(tabId, "✕", BADGE_NOT_ARCHIVED_COLOR);
   } else {
     clearBadge(tabId);
   }
   storeResult(tabId, result);
+}
+
+function setBadge(tabId, text, color) {
+  silent(chrome.action.setBadgeText({ text, tabId }));
+  silent(chrome.action.setBadgeBackgroundColor({ color, tabId }));
+  silent(chrome.action.setBadgeTextColor({ color: BADGE_TEXT_COLOR, tabId }));
 }
 
 function clearBadge(tabId) {
@@ -372,9 +393,7 @@ function clearBadge(tabId) {
 }
 
 function setBadgeLoading(tabId) {
-  silent(chrome.action.setBadgeText({ text: "…", tabId }));
-  silent(chrome.action.setBadgeBackgroundColor({ color: "#8B8C89", tabId }));
-  silent(chrome.action.setBadgeTextColor({ color: "#FFFFFF", tabId }));
+  setBadge(tabId, "?", BADGE_CHECKING_COLOR);
 }
 
 function storeResult(tabId, result) {
