@@ -9,6 +9,21 @@ const ARCHIVE_TODAY_HOSTS = new Set([
   "archive.is",
   "archive.md",
 ]);
+const TRACKING_QUERY_PARAMS = new Set([
+  "dclid",
+  "fbclid",
+  "gbraid",
+  "gclid",
+  "igshid",
+  "mc_cid",
+  "mc_eid",
+  "msclkid",
+  "ref",
+  "referrer",
+  "source",
+  "wbraid",
+  "yclid",
+]);
 
 const cache = new Map();
 const inflight = new Map();
@@ -103,6 +118,41 @@ function normalizeUrl(u) {
 
 function urlsMatch(a, b) {
   return normalizeUrl(a) === normalizeUrl(b);
+}
+
+function isTrackingParamName(name) {
+  const normalized = name.toLowerCase();
+  return normalized.startsWith("utm_") || TRACKING_QUERY_PARAMS.has(normalized);
+}
+
+function stripTrackingParams(url) {
+  try {
+    const parsed = new URL(url);
+    if (!parsed.search) return url;
+
+    const namesToRemove = new Set();
+    for (const [name] of parsed.searchParams) {
+      if (isTrackingParamName(name)) namesToRemove.add(name);
+    }
+    if (!namesToRemove.size) return url;
+
+    for (const name of namesToRemove) {
+      parsed.searchParams.delete(name);
+    }
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
+function lookupCandidates(url) {
+  const candidates = [url];
+  const stripped = stripTrackingParams(url);
+  if (normalizeUrl(stripped) !== normalizeUrl(url)) {
+    candidates.push(stripped);
+  }
+  return candidates;
 }
 
 function extractOriginalFromMementoUrl(mementoUrl) {
@@ -247,6 +297,32 @@ async function checkBoth(url, tabId) {
 }
 
 async function fetchBoth(url) {
+  const candidates = lookupCandidates(url);
+  let cacheable = true;
+  let result = null;
+
+  for (const candidate of candidates) {
+    const checked = await fetchCandidate(candidate);
+    cacheable = cacheable && checked.cacheable;
+    result = {
+      archived: checked.archived,
+      archiveToday: checked.archiveToday,
+      wayback: checked.wayback,
+      pageUrl: url,
+      checkedAt: Date.now(),
+    };
+    if (checked.error) result.error = true;
+    if (checked.archived || checked.error) break;
+  }
+
+  if (cacheable) {
+    cacheSet(url, { value: result, cachedAt: Date.now() });
+  }
+
+  return result;
+}
+
+async function fetchCandidate(url) {
   const [archiveSettled, waybackSettled] = await Promise.allSettled([
     checkArchiveToday(url),
     checkWayback(url),
@@ -255,11 +331,10 @@ async function fetchBoth(url) {
   const archiveToday = archiveSettled.status === "fulfilled" ? archiveSettled.value : null;
   const wayback = waybackSettled.status === "fulfilled" ? waybackSettled.value : null;
   const archived = !!(archiveToday || wayback);
-  // checkedAt makes each fresh result a distinct value so a Recheck that
-  // returns the same snapshots still triggers chrome.storage.onChanged in
-  // the popup — Chrome suppresses the event when the new value equals the
-  // existing one.
-  const result = { archived, archiveToday, wayback, pageUrl: url, checkedAt: Date.now() };
+  const cacheable =
+    archiveSettled.status === "fulfilled" &&
+    waybackSettled.status === "fulfilled";
+  const result = { archived, archiveToday, wayback, cacheable };
 
   // If both upstream checks errored, surface that to the popup instead of
   // pretending we know there's no archive.
@@ -268,15 +343,6 @@ async function fetchBoth(url) {
     waybackSettled.status === "rejected"
   ) {
     result.error = true;
-  }
-
-  // Only cache when both checks completed cleanly. A transient outage
-  // shouldn't poison the cache for the rest of the service-worker lifetime.
-  if (
-    archiveSettled.status === "fulfilled" &&
-    waybackSettled.status === "fulfilled"
-  ) {
-    cacheSet(url, { value: result, cachedAt: Date.now() });
   }
 
   return result;

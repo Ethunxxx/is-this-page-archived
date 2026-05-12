@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Is This Page Archived?",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Check if the current page has been archived on archive.today or the Wayback Machine and jump to the oldest snapshot.",
   "permissions": ["activeTab", "tabs", "storage"],
   "host_permissions": [

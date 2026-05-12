@@ -46,6 +46,12 @@ On every completed page navigation the service worker fires two requests in para
 
 Both APIs return structured data with no anti-bot restrictions.
 
+If the exact URL is not archived and its query string only differs by known
+tracking parameters such as `utm_*`, `fbclid`, `gclid`, or `source`, the
+service worker retries the lookup with those parameters removed. This catches
+shared links whose archived copy exists under the clean canonical URL while
+leaving meaningful query parameters intact.
+
 ### Response validation
 
 Both services occasionally return a snapshot for a *different* URL than the one requested (typically the host root) when no exact match exists. The extension rejects these:
@@ -84,7 +90,7 @@ Results are kept in an in-memory `Map` in the service worker with:
 - **In-flight deduplication** so two tabs on the same URL share a single fetch
 - **Failure isolation** — if either upstream call rejects, the result is *not* cached, so a transient outage doesn't poison results for the rest of the service-worker lifetime
 
-The cache is keyed by a normalized form of the URL: `www.` stripped, host lowercased, trailing slashes removed, fragment dropped. So `https://Example.com/foo/` and `https://www.example.com/foo` share an entry.
+The cache is keyed by a normalized form of the URL: `www.` stripped, host lowercased, trailing slashes removed, fragment dropped. So `https://Example.com/foo/` and `https://www.example.com/foo` share an entry. Query parameters remain part of the cache key, but archived checks may fall back to a tracking-parameter-stripped lookup before storing the result for the original URL.
 
 Clicking a "Save to…" link in the popup invalidates that URL's cache entry so the next visit re-checks instead of returning the stale "not archived" result. The **Recheck** button does the same, then forces an immediate fresh check.
 
