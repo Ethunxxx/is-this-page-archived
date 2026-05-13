@@ -47,10 +47,10 @@ On every completed page navigation the service worker fires two requests in para
 Both APIs return structured data with no anti-bot restrictions.
 
 If the exact URL is not archived and its query string only differs by known
-tracking parameters such as `utm_*`, `fbclid`, `gclid`, or `source`, the
-service worker retries the lookup with those parameters removed. This catches
-shared links whose archived copy exists under the clean canonical URL while
-leaving meaningful query parameters intact.
+tracking parameters such as `utm_*`, `_gl`, `_ga`, `fbclid`, `gclid`,
+`gad_source`, or `source`, the service worker retries the lookup with those
+parameters removed. This catches shared links whose archived copy exists under
+the clean canonical URL while leaving meaningful query parameters intact.
 
 ### Response validation
 
