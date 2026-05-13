@@ -17,6 +17,10 @@ const ARCHIVE_SERVICE_HOSTS = new Set([
   ...ARCHIVE_TODAY_HOSTS,
   "web.archive.org",
 ]);
+const EXCLUDED_HOSTS = new Set([
+  "www.capitaliq.spglobal.com",
+  "www.google.com",
+]);
 const TRACKING_QUERY_PARAMS = new Set([
   "_ga",
   "_gl",
@@ -82,12 +86,20 @@ function isArchiveServiceHost(hostname) {
   return ARCHIVE_SERVICE_HOSTS.has(hostname.toLowerCase());
 }
 
+function isExcludedHost(hostname) {
+  return EXCLUDED_HOSTS.has(hostname.toLowerCase());
+}
+
 function isCheckableUrl(url) {
   if (!url) return false;
   if (!url.startsWith("http://") && !url.startsWith("https://")) return false;
   try {
     const hostname = new URL(url).hostname;
-    return !isPrivateHost(hostname) && !isArchiveServiceHost(hostname);
+    return (
+      !isPrivateHost(hostname) &&
+      !isArchiveServiceHost(hostname) &&
+      !isExcludedHost(hostname)
+    );
   } catch {
     return false;
   }

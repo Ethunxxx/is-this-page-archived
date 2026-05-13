@@ -70,7 +70,7 @@ The badge is set per-tab via `chrome.action.setBadgeText`:
 | Checking | Grey `?` |
 | Archived (either source) | Dusk Blue `✓` |
 | Not archived | Steel Blue `✕` |
-| Non-checkable URL (non-HTTP(S), private/local, or archive service) | _(no badge)_ |
+| Non-checkable URL (non-HTTP(S), private/local, archive service, or explicitly excluded host) | _(no badge)_ |
 | Error | Red `✕` |
 
 ### Popup states
@@ -81,7 +81,7 @@ The badge is set per-tab via `chrome.action.setBadgeText`:
 | Archived | At least one service returned a valid snapshot |
 | Not Archived | Both services succeeded and neither had a snapshot — also shows "Save to…" links |
 | Check Failed | Both upstream calls errored, or the popup timed out after 12s |
-| No Page to Check | The active tab isn't an HTTP(S) URL, is on a private/local host, or is already on an archive service |
+| No Page to Check | The active tab isn't an HTTP(S) URL, is on a private/local host, is already on an archive service, or is explicitly excluded |
 
 ### Caching
 
@@ -126,6 +126,16 @@ archive of itself is not useful:
 
 - `archive.ph`, `archive.today`, `archive.is`, `archive.md`
 - `web.archive.org`
+
+The extension also skips specific high-traffic hosts to avoid generating
+unnecessary archive-service traffic:
+
+- `www.capitaliq.spglobal.com`
+- `www.google.com`
+
+These are exact host exclusions: other subdomains, such as
+`docs.cloud.google.com`, and sibling hosts, such as `www.spglobal.com`, are still
+checkable.
 
 ---
 
