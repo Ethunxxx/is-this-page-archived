@@ -324,36 +324,65 @@ async function checkBoth(url, tabId) {
     return;
   }
 
-  setBadgeLoading(tabId, url);
-
   // Share a single in-flight fetch across concurrent callers asking about
   // the same (normalized) URL — e.g. two tabs on the same page.
   const key = cacheKey(url);
   let pending = inflight.get(key);
+  if (!pending?.latest?.archived) {
+    setBadgeLoading(tabId, url);
+  }
   if (!pending) {
-    pending = fetchBoth(url).finally(() => inflight.delete(key));
+    pending = startInflightCheck(url, key);
     inflight.set(key, pending);
   }
-  const result = await pending;
+  const applyProgress = (result) => {
+    silent(applyResultIfStillCurrent(tabId, url, result));
+  };
+  pending.listeners.add(applyProgress);
+  if (pending.latest) applyProgress(pending.latest);
 
-  await applyResultIfStillCurrent(tabId, url, result);
+  try {
+    const result = await pending.promise;
+    await applyResultIfStillCurrent(tabId, url, result);
+  } finally {
+    pending.listeners.delete(applyProgress);
+  }
 }
 
-async function fetchBoth(url) {
+function startInflightCheck(url, key) {
+  const pending = {
+    latest: null,
+    listeners: new Set(),
+    promise: null,
+  };
+  const publish = (result) => {
+    pending.latest = result;
+    pending.listeners.forEach((listener) => listener(result));
+  };
+
+  pending.promise = fetchBoth(url, publish).finally(() => inflight.delete(key));
+  return pending;
+}
+
+async function fetchBoth(url, onProgress = () => {}) {
   const candidates = lookupCandidates(url);
   let cacheable = true;
   let result = null;
 
-  for (const candidate of candidates) {
-    const checked = await fetchCandidate(candidate);
+  for (let i = 0; i < candidates.length; i++) {
+    const candidate = candidates[i];
+    const isLastCandidate = i === candidates.length - 1;
+    const checked = await fetchCandidate(candidate, (candidateResult) => {
+      const progress = withPageMetadata(candidateResult, url);
+      // If the exact URL missed and we still have the stripped tracking-param
+      // fallback to try, don't briefly flash a final "not archived" state.
+      if (!isLastCandidate && !progress.checking && !progress.archived && !progress.error) {
+        return;
+      }
+      onProgress(progress);
+    });
     cacheable = cacheable && checked.cacheable;
-    result = {
-      archived: checked.archived,
-      archiveToday: checked.archiveToday,
-      wayback: checked.wayback,
-      pageUrl: url,
-      checkedAt: Date.now(),
-    };
+    result = withPageMetadata(checked, url);
     if (checked.error) result.error = true;
     if (checked.archived || checked.error) break;
   }
@@ -365,30 +394,73 @@ async function fetchBoth(url) {
   return result;
 }
 
-async function fetchCandidate(url) {
-  const [archiveSettled, waybackSettled] = await Promise.allSettled([
-    checkArchiveToday(url),
-    checkWayback(url),
-  ]);
+async function fetchCandidate(url, onProgress) {
+  const state = {
+    archiveToday: null,
+    wayback: null,
+    services: {
+      archiveToday: "checking",
+      wayback: "checking",
+    },
+  };
 
-  const archiveToday = archiveSettled.status === "fulfilled" ? archiveSettled.value : null;
-  const wayback = waybackSettled.status === "fulfilled" ? waybackSettled.value : null;
-  const archived = !!(archiveToday || wayback);
-  const cacheable =
-    archiveSettled.status === "fulfilled" &&
-    waybackSettled.status === "fulfilled";
-  const result = { archived, archiveToday, wayback, cacheable };
+  const publish = () => onProgress(candidateResult(state));
+  const archiveToday = settleService("archiveToday", checkArchiveToday(url), state, publish);
+  const wayback = settleService("wayback", checkWayback(url), state, publish);
+  await Promise.all([archiveToday, wayback]);
+
+  return candidateResult(state);
+}
+
+async function settleService(service, promise, state, publish) {
+  try {
+    const value = await promise;
+    state[service] = value;
+    state.services[service] = value ? "found" : "not_found";
+  } catch {
+    state.services[service] = "error";
+  } finally {
+    publish();
+  }
+}
+
+function candidateResult(state) {
+  const archived = !!(state.archiveToday || state.wayback);
+  const checking = Object.values(state.services).includes("checking");
+  const cacheable = !Object.values(state.services).includes("error");
+  const result = {
+    archived,
+    archiveToday: state.archiveToday,
+    wayback: state.wayback,
+    checking,
+    cacheable,
+    services: { ...state.services },
+  };
 
   // If both upstream checks errored, surface that to the popup instead of
   // pretending we know there's no archive.
   if (
-    archiveSettled.status === "rejected" &&
-    waybackSettled.status === "rejected"
+    state.services.archiveToday === "error" &&
+    state.services.wayback === "error"
   ) {
     result.error = true;
   }
 
   return result;
+}
+
+function withPageMetadata(result, pageUrl) {
+  return {
+    archived: result.archived,
+    archiveToday: result.archiveToday,
+    wayback: result.wayback,
+    checking: result.checking,
+    cacheable: result.cacheable,
+    services: result.services,
+    pageUrl,
+    checkedAt: Date.now(),
+    ...(result.error ? { error: true } : {}),
+  };
 }
 
 async function applyResultIfStillCurrent(tabId, url, result) {
@@ -400,10 +472,12 @@ async function applyResultIfStillCurrent(tabId, url, result) {
 }
 
 function applyResult(tabId, result) {
-  if (result && result.error) {
-    setBadge(tabId, "✕", BADGE_ERROR_COLOR);
-  } else if (result && result.archived) {
+  if (result && result.archived) {
     setBadge(tabId, "✓", BADGE_COLOR);
+  } else if (result && result.checking) {
+    setBadge(tabId, "?", BADGE_CHECKING_COLOR);
+  } else if (result && result.error) {
+    setBadge(tabId, "✕", BADGE_ERROR_COLOR);
   } else if (result) {
     setBadge(tabId, "✕", BADGE_NOT_ARCHIVED_COLOR);
   } else {

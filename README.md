@@ -13,10 +13,11 @@ A minimalist Chrome extension that checks whether the current page has been arch
 ## What it does
 
 - Checks **archive.today** and the **Wayback Machine** in parallel every time you navigate to a page
-- Displays a **checkmark badge** on the extension icon if either service has an archived copy
+- Displays a **checkmark badge** on the extension icon as soon as either service has an archived copy
 - Click the icon to open the popup, which shows:
   - The oldest archived snapshot from **archive.today** (listed first, when available)
   - The oldest archived snapshot from the **Wayback Machine** (listed second, when available)
+  - A still-checking status when one service has answered and the other is still running
   - A **Recheck** button to bypass the cache and run a fresh check
   - Links to submit the page to both services if no archive exists
 
@@ -67,8 +68,8 @@ The badge is set per-tab via `chrome.action.setBadgeText`:
 
 | State | Badge |
 |---|---|
-| Checking | Grey `?` |
-| Archived (either source) | Dusk Blue `✓` |
+| Checking | Grey `?` while no source has found a snapshot yet and at least one request is still running |
+| Archived (either source) | Dusk Blue `✓` as soon as either source finds a valid snapshot |
 | Not archived | Steel Blue `✕` |
 | Non-checkable URL (non-HTTP(S), private/local, archive service, or explicitly excluded host) | _(no badge)_ |
 | Error | Red `✕` |
@@ -77,8 +78,8 @@ The badge is set per-tab via `chrome.action.setBadgeText`:
 
 | State | Shown when |
 |---|---|
-| Checking | Fetches are in flight |
-| Archived | At least one service returned a valid snapshot |
+| Checking | Fetches are in flight and no snapshot has been found yet; if one service already missed, the popup says which one is still checking |
+| Archived | At least one service returned a valid snapshot; if the other service is still running, the popup shows that too |
 | Not Archived | Both services succeeded and neither had a snapshot — also shows "Save to…" links |
 | Check Failed | Both upstream calls errored, or the popup timed out after 12s |
 | No Page to Check | The active tab isn't an HTTP(S) URL, is on a private/local host, is already on an archive service, or is explicitly excluded |

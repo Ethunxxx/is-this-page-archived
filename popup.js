@@ -28,6 +28,14 @@ const stateError = document.getElementById("state-error");
 const resultsList = document.getElementById("results-list");
 const linkSaveArchive = document.getElementById("link-save-archive");
 const linkSaveWayback = document.getElementById("link-save-wayback");
+const loadingMessage = stateLoading.querySelector(".message");
+const archivedSubtitle = stateArchived.querySelector(".subtitle");
+const DEFAULT_LOADING_MESSAGE = "Checking archives...";
+const DEFAULT_ARCHIVED_SUBTITLE = "Oldest snapshots found";
+const SERVICE_NAMES = {
+  archiveToday: "archive.today",
+  wayback: "Wayback Machine",
+};
 
 function showState(el) {
   [stateLoading, stateArchived, stateNotArchived, stateNa, stateError].forEach(
@@ -155,6 +163,51 @@ function createResultRow(serviceName, datetime, url) {
   return row;
 }
 
+function createStatusRow(serviceName, message) {
+  const row = document.createElement("div");
+  row.className = "result-row";
+
+  const info = document.createElement("div");
+  info.className = "result-info";
+
+  const name = document.createElement("div");
+  name.className = "result-service";
+  name.textContent = serviceName;
+  info.appendChild(name);
+
+  const status = document.createElement("div");
+  status.className = "result-date";
+  status.textContent = message;
+  info.appendChild(status);
+
+  row.appendChild(info);
+  return row;
+}
+
+function serviceName(service) {
+  return SERVICE_NAMES[service] || service;
+}
+
+function formatServiceList(services) {
+  return services.map(serviceName).join(" and ");
+}
+
+function getServiceStatuses(result) {
+  if (result.services) return result.services;
+  return {
+    archiveToday: result.archiveToday ? "found" : result.checking ? "checking" : "not_found",
+    wayback: result.wayback ? "found" : result.checking ? "checking" : "not_found",
+  };
+}
+
+function statusSummary(service, status) {
+  const name = serviceName(service);
+  if (status === "found") return `${name} found a snapshot`;
+  if (status === "not_found") return `${name} did not find a snapshot`;
+  if (status === "error") return `${name} could not be reached`;
+  return `${name} is still checking`;
+}
+
 let activeCheck = null;
 let saveLinksWired = false;
 
@@ -174,9 +227,9 @@ function performCheck(tab, { force }) {
   };
   const finalize = (result) => {
     if (resolved) return;
-    // Background writes { checking: true } while the badge shows "?".
+    // Intermediate writes keep the popup open so final results can still land.
     if (result?.checking) {
-      showState(stateLoading);
+      renderResult(result);
       return;
     }
     teardown();
@@ -201,9 +254,12 @@ function performCheck(tab, { force }) {
   activeCheck = { id: me, cancel: teardown };
   chrome.storage.onChanged.addListener(onChange);
 
-  const startNetworkCheck = () => {
+  const startNetworkCheck = ({ preserveCurrent = false } = {}) => {
     if (resolved) return;
-    showState(stateLoading);
+    if (!preserveCurrent) {
+      loadingMessage.textContent = DEFAULT_LOADING_MESSAGE;
+      showState(stateLoading);
+    }
     // Tell the service worker to run the check. Without this, a cold-
     // respawned SW with no pending tab event would never check this tab
     // and the popup would just sit on the loading state until the 12s
@@ -223,7 +279,8 @@ function performCheck(tab, { force }) {
     if (resolved) return;
     const stored = data[key];
     if (stored?.checking && urlsMatch(stored.pageUrl, tab.url)) {
-      startNetworkCheck();
+      renderResult(stored);
+      startNetworkCheck({ preserveCurrent: true });
       return;
     }
     if (storedResultApplies(stored)) finalize(stored);
@@ -257,12 +314,16 @@ async function init() {
 }
 
 function renderResult(result) {
-  if (result.checking) {
-    showState(stateLoading);
+  if (result.archived) {
+    renderArchivedResult(result);
     return;
   }
   if (result.error) {
     showState(stateError);
+    return;
+  }
+  if (result.checking) {
+    renderLoadingResult(result);
     return;
   }
   if (!result.archived && !result.archiveToday && !result.wayback) {
@@ -289,7 +350,38 @@ function renderResult(result) {
     return;
   }
 
+  renderArchivedResult(result);
+}
+
+function renderLoadingResult(result) {
+  const statuses = getServiceStatuses(result);
+  const pending = Object.keys(statuses).filter(
+    (service) => statuses[service] === "checking"
+  );
+  const finished = Object.keys(statuses).filter(
+    (service) => statuses[service] !== "checking"
+  );
+
+  if (finished.length && pending.length) {
+    loadingMessage.textContent = `${finished
+      .map((service) => statusSummary(service, statuses[service]))
+      .join(". ")}. Checking ${formatServiceList(pending)}...`;
+  } else {
+    loadingMessage.textContent = DEFAULT_LOADING_MESSAGE;
+  }
+
+  showState(stateLoading);
+}
+
+function renderArchivedResult(result) {
   resultsList.innerHTML = "";
+  const statuses = getServiceStatuses(result);
+  const pending = Object.keys(statuses).filter(
+    (service) => statuses[service] === "checking"
+  );
+  archivedSubtitle.textContent = pending.length
+    ? `Snapshot found; still checking ${formatServiceList(pending)}.`
+    : DEFAULT_ARCHIVED_SUBTITLE;
 
   if (result.archiveToday) {
     resultsList.appendChild(
@@ -302,6 +394,10 @@ function renderResult(result) {
       createResultRow("Wayback Machine", result.wayback.datetime, result.wayback.url)
     );
   }
+
+  pending.forEach((service) => {
+    resultsList.appendChild(createStatusRow(serviceName(service), "Still checking..."));
+  });
 
   showState(stateArchived);
 }
