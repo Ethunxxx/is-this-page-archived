@@ -20,7 +20,14 @@ const ARCHIVE_SERVICE_HOSTS = new Set([
 const EXCLUDED_HOSTS = new Set([
   "www.capitaliq.spglobal.com",
   "www.google.com",
+  "www.youtube.com",
 ]);
+const EXCLUDED_HOST_SUFFIXES = [
+  "mail.google.com",
+  "calendar.google.com",
+  "maps.google.com",
+  "drive.google.com",
+];
 const TRACKING_QUERY_PARAMS = new Set([
   "_ga",
   "_gl",
@@ -87,7 +94,11 @@ function isArchiveServiceHost(hostname) {
 }
 
 function isExcludedHost(hostname) {
-  return EXCLUDED_HOSTS.has(hostname.toLowerCase());
+  const h = hostname.toLowerCase();
+  if (EXCLUDED_HOSTS.has(h)) return true;
+  return EXCLUDED_HOST_SUFFIXES.some(
+    (suffix) => h === suffix || h.endsWith("." + suffix)
+  );
 }
 
 function isCheckableUrl(url) {

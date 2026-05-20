@@ -128,14 +128,8 @@ archive of itself is not useful:
 - `web.archive.org`
 
 The extension also skips specific high-traffic hosts to avoid generating
-unnecessary archive-service traffic:
-
-- `www.capitaliq.spglobal.com`
-- `www.google.com`
-
-These are exact host exclusions: other subdomains, such as
-`docs.cloud.google.com`, and sibling hosts, such as `www.spglobal.com`, are still
-checkable.
+unnecessary archive-service traffic. See `EXCLUDED_HOSTS` and
+`EXCLUDED_HOST_SUFFIXES` in [`background.js`](background.js).
 
 ---
 

@@ -7,6 +7,18 @@ const ARCHIVE_SERVICE_HOSTS = new Set([
   "archive.md",
   "web.archive.org",
 ]);
+const EXCLUDED_HOSTS = new Set([
+  "www.capitaliq.spglobal.com",
+  "www.google.com",
+  "youtube.com",
+  "www.youtube.com",
+]);
+const EXCLUDED_HOST_SUFFIXES = [
+  "mail.google.com",
+  "calendar.google.com",
+  "maps.google.com",
+  "drive.google.com",
+];
 
 const stateLoading = document.getElementById("state-loading");
 const stateArchived = document.getElementById("state-archived");
@@ -59,12 +71,24 @@ function isArchiveServiceHost(hostname) {
   return ARCHIVE_SERVICE_HOSTS.has(hostname.toLowerCase());
 }
 
+function isExcludedHost(hostname) {
+  const h = hostname.toLowerCase();
+  if (EXCLUDED_HOSTS.has(h)) return true;
+  return EXCLUDED_HOST_SUFFIXES.some(
+    (suffix) => h === suffix || h.endsWith("." + suffix)
+  );
+}
+
 function isCheckableUrl(url) {
   if (!url) return false;
   if (!url.startsWith("http://") && !url.startsWith("https://")) return false;
   try {
     const hostname = new URL(url).hostname;
-    return !isPrivateHost(hostname) && !isArchiveServiceHost(hostname);
+    return (
+      !isPrivateHost(hostname) &&
+      !isArchiveServiceHost(hostname) &&
+      !isExcludedHost(hostname)
+    );
   } catch {
     return false;
   }
