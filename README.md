@@ -37,7 +37,7 @@ The extension will appear in your toolbar immediately.
 
 ### Archive checking
 
-On every completed page navigation the service worker fires two requests in parallel:
+After you open a page (follow a link, enter a URL, or refresh), the service worker fires two requests in parallel. This means that even if images, ads, or other content are still loading, the check already runs once the main page load is done. In-app route changes on single-page sites (without a full reload) do not run another check.
 
 | Service | Endpoint | Method |
 |---|---|---|
