@@ -94,6 +94,23 @@ function isCheckableUrl(url) {
   }
 }
 
+function normalizeUrl(u) {
+  try {
+    const parsed = new URL(u);
+    parsed.hash = "";
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    let pathname = parsed.pathname;
+    if (pathname.length > 1) pathname = pathname.replace(/\/+$/, "");
+    return `${parsed.protocol}//${host}${pathname}${parsed.search}`;
+  } catch {
+    return String(u).toLowerCase();
+  }
+}
+
+function urlsMatch(a, b) {
+  return normalizeUrl(a) === normalizeUrl(b);
+}
+
 function formatDatetime(dt) {
   if (!dt) return "";
   const d = new Date(dt);
@@ -157,6 +174,11 @@ function performCheck(tab, { force }) {
   };
   const finalize = (result) => {
     if (resolved) return;
+    // Background writes { checking: true } while the badge shows "?".
+    if (result?.checking) {
+      showState(stateLoading);
+      return;
+    }
     teardown();
     if (activeCheck && activeCheck.id === me) activeCheck = null;
     if (result) renderResult(result);
@@ -169,6 +191,11 @@ function performCheck(tab, { force }) {
     // moved to a non-checkable URL, which finalize() resolves to error.
     if (change && "newValue" in change) finalize(change.newValue);
   };
+  const storedResultApplies = (result) =>
+    result &&
+    !result.checking &&
+    result.pageUrl &&
+    urlsMatch(result.pageUrl, tab.url);
   // cancel tears down silently — a superseding Recheck shouldn't flash
   // the error state on its way to showing the new loading state.
   activeCheck = { id: me, cancel: teardown };
@@ -194,7 +221,12 @@ function performCheck(tab, { force }) {
 
   chrome.storage.session.get(key).then((data) => {
     if (resolved) return;
-    if (data[key]) finalize(data[key]);
+    const stored = data[key];
+    if (stored?.checking && urlsMatch(stored.pageUrl, tab.url)) {
+      startNetworkCheck();
+      return;
+    }
+    if (storedResultApplies(stored)) finalize(stored);
     else startNetworkCheck();
   });
 }
@@ -225,6 +257,10 @@ async function init() {
 }
 
 function renderResult(result) {
+  if (result.checking) {
+    showState(stateLoading);
+    return;
+  }
   if (result.error) {
     showState(stateError);
     return;

@@ -324,7 +324,7 @@ async function checkBoth(url, tabId) {
     return;
   }
 
-  setBadgeLoading(tabId);
+  setBadgeLoading(tabId, url);
 
   // Share a single in-flight fetch across concurrent callers asking about
   // the same (normalized) URL — e.g. two tabs on the same page.
@@ -422,8 +422,11 @@ function clearBadge(tabId) {
   silent(chrome.action.setBadgeText({ text: "", tabId }));
 }
 
-function setBadgeLoading(tabId) {
+function setBadgeLoading(tabId, url) {
   setBadge(tabId, "?", BADGE_CHECKING_COLOR);
+  // Mark in-flight so the popup doesn't render a stale result for this tab
+  // while the badge already shows "?".
+  storeResult(tabId, { checking: true, pageUrl: url });
 }
 
 function storeResult(tabId, result) {
