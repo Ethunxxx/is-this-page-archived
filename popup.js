@@ -16,6 +16,7 @@ const EXCLUDED_HOSTS = new Set([
 const EXCLUDED_HOST_SUFFIXES = [
   "mail.google.com",
   "calendar.google.com",
+  "contacts.google.com",
   "maps.google.com",
   "drive.google.com",
 ];
