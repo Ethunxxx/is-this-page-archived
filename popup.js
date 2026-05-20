@@ -1,25 +1,7 @@
+import { isCheckableUrl } from "./url-policy.js";
+
 const ARCHIVE_TODAY = "https://archive.ph";
 const WAYBACK_SAVE = "https://web.archive.org/save/";
-const ARCHIVE_SERVICE_HOSTS = new Set([
-  "archive.ph",
-  "archive.today",
-  "archive.is",
-  "archive.md",
-  "web.archive.org",
-]);
-const EXCLUDED_HOSTS = new Set([
-  "www.capitaliq.spglobal.com",
-  "www.google.com",
-  "youtube.com",
-  "www.youtube.com",
-]);
-const EXCLUDED_HOST_SUFFIXES = [
-  "mail.google.com",
-  "calendar.google.com",
-  "contacts.google.com",
-  "maps.google.com",
-  "drive.google.com",
-];
 
 const stateLoading = document.getElementById("state-loading");
 const stateArchived = document.getElementById("state-archived");
@@ -43,64 +25,6 @@ function showState(el) {
     (s) => s.classList.add("hidden")
   );
   el.classList.remove("hidden");
-}
-
-function isPrivateHost(hostname) {
-  if (!hostname) return true;
-  const h = hostname.toLowerCase();
-  if (h === "localhost") return true;
-  if (
-    h.endsWith(".localhost") ||
-    h.endsWith(".local") ||
-    h.endsWith(".internal") ||
-    h.endsWith(".intranet") ||
-    h.endsWith(".lan") ||
-    h.endsWith(".test") ||
-    h.endsWith(".example") ||
-    h.endsWith(".invalid")
-  ) {
-    return true;
-  }
-  if (h === "::1" || h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe80:")) {
-    return true;
-  }
-  const ip = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (ip) {
-    const a = Number(ip[1]);
-    const b = Number(ip[2]);
-    if (a === 0 || a === 10 || a === 127) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 169 && b === 254) return true;
-  }
-  return false;
-}
-
-function isArchiveServiceHost(hostname) {
-  return ARCHIVE_SERVICE_HOSTS.has(hostname.toLowerCase());
-}
-
-function isExcludedHost(hostname) {
-  const h = hostname.toLowerCase();
-  if (EXCLUDED_HOSTS.has(h)) return true;
-  return EXCLUDED_HOST_SUFFIXES.some(
-    (suffix) => h === suffix || h.endsWith("." + suffix)
-  );
-}
-
-function isCheckableUrl(url) {
-  if (!url) return false;
-  if (!url.startsWith("http://") && !url.startsWith("https://")) return false;
-  try {
-    const hostname = new URL(url).hostname;
-    return (
-      !isPrivateHost(hostname) &&
-      !isArchiveServiceHost(hostname) &&
-      !isExcludedHost(hostname)
-    );
-  } catch {
-    return false;
-  }
 }
 
 function normalizeUrl(u) {

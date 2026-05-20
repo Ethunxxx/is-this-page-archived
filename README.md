@@ -130,7 +130,7 @@ archive of itself is not useful:
 
 The extension also skips specific high-traffic hosts to avoid generating
 unnecessary archive-service traffic. See `EXCLUDED_HOSTS` and
-`EXCLUDED_HOST_SUFFIXES` in [`background.js`](background.js).
+`EXCLUDED_HOST_SUFFIXES` in [`url-policy.js`](url-policy.js).
 
 ---
 
@@ -140,6 +140,7 @@ unnecessary archive-service traffic. See `EXCLUDED_HOSTS` and
 is-this-page-archived/
 ├── manifest.json       # Manifest V3 config
 ├── background.js       # Service worker: archive checks, badge, caching
+├── url-policy.js       # Shared URL filtering and exclusion policy
 ├── popup.html          # Popup UI (Serene Blue design)
 ├── popup.js            # Popup logic
 └── icons/
