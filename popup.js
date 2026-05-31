@@ -11,10 +11,16 @@ const stateNa = document.getElementById("state-na");
 const stateError = document.getElementById("state-error");
 const stateIgnored = document.getElementById("state-ignored");
 const resultsList = document.getElementById("results-list");
-const linkSaveArchive = document.getElementById("link-save-archive");
-const linkSaveWayback = document.getElementById("link-save-wayback");
 const ignoredMessage = document.getElementById("ignored-message");
 const linkReenable = document.getElementById("link-reenable");
+const controlCard = document.getElementById("control-card");
+const controlActions = document.getElementById("control-actions");
+const excludePanel = document.getElementById("exclude-panel");
+const btnArchive = document.getElementById("btn-archive");
+const btnExclude = document.getElementById("btn-exclude");
+const btnExcludeHost = document.getElementById("btn-exclude-host");
+const btnExcludeDomain = document.getElementById("btn-exclude-domain");
+const btnExcludeCancel = document.getElementById("btn-exclude-cancel");
 const loadingMessage = stateLoading.querySelector(".message");
 const archivedSubtitle = stateArchived.querySelector(".subtitle");
 const DEFAULT_LOADING_MESSAGE = "Checking archives...";
@@ -164,7 +170,6 @@ function statusSummary(service, status) {
 }
 
 let activeCheck = null;
-let saveLinksWired = false;
 
 function performCheck(tab, { force }) {
   // Tear down any previous check so a Recheck click can't double-listen.
@@ -265,31 +270,58 @@ function showIgnoredState(tab, rules) {
   showState(stateIgnored);
 }
 
-function wireIgnoreControls(tab) {
+function showExcludePanel(show) {
+  excludePanel.classList.toggle("hidden", !show);
+  controlActions.classList.toggle("hidden", show);
+}
+
+function setControlExcluded(excluded) {
+  showExcludePanel(false);
+  btnArchive.disabled = excluded;
+  btnExclude.disabled = excluded;
+  if (excluded) {
+    btnArchive.title = "Archiving is disabled because this site is excluded";
+    btnExclude.title = "This site is already excluded from checks";
+  } else {
+    btnArchive.title =
+      "Save this page to archive.today and the Wayback Machine";
+    btnExclude.title = "Stop checking archives for this site";
+  }
+}
+
+function wireControlBar(tab) {
   const host = hostnameOf(tab.url);
   if (!host) return;
   const domain = baseDomain(host);
 
-  document.querySelectorAll(".btn-ignore-host").forEach((btn) => {
-    btn.textContent = `Ignore ${host}`;
-    btn.addEventListener("click", async (e) => {
-      e.preventDefault();
-      const rules = await getIgnoreRules();
-      if (!rules.hosts.includes(host)) rules.hosts.push(host);
-      await setIgnoreRules(rules);
-      showIgnoredState(tab, rules);
-    });
+  const pageUrl = tab.url;
+  btnArchive.addEventListener("click", () => {
+    chrome.runtime.sendMessage({ type: "invalidate", url: pageUrl }).catch(() => {});
+    openUrl(`${ARCHIVE_TODAY}/?url=${encodeURIComponent(pageUrl)}`);
+    openUrl(WAYBACK_SAVE + encodeURIComponent(pageUrl));
   });
 
-  document.querySelectorAll(".btn-ignore-domain").forEach((btn) => {
-    btn.textContent = `Ignore ${domain}`;
-    btn.addEventListener("click", async (e) => {
-      e.preventDefault();
-      const rules = await getIgnoreRules();
-      if (!rules.domains.includes(domain)) rules.domains.push(domain);
-      await setIgnoreRules(rules);
-      showIgnoredState(tab, rules);
-    });
+  btnExclude.addEventListener("click", () => showExcludePanel(true));
+  btnExcludeCancel.addEventListener("click", () => showExcludePanel(false));
+
+  btnExcludeHost.textContent = `Only ${host}`;
+  btnExcludeHost.title = `Stop checking only ${host}`;
+  btnExcludeHost.addEventListener("click", async () => {
+    const rules = await getIgnoreRules();
+    if (!rules.hosts.includes(host)) rules.hosts.push(host);
+    await setIgnoreRules(rules);
+    setControlExcluded(true);
+    showIgnoredState(tab, rules);
+  });
+
+  btnExcludeDomain.textContent = `${domain} and all subdomains`;
+  btnExcludeDomain.title = `Stop checking ${domain} and every subdomain`;
+  btnExcludeDomain.addEventListener("click", async () => {
+    const rules = await getIgnoreRules();
+    if (!rules.domains.includes(domain)) rules.domains.push(domain);
+    await setIgnoreRules(rules);
+    setControlExcluded(true);
+    showIgnoredState(tab, rules);
   });
 }
 
@@ -320,12 +352,14 @@ async function init() {
   }
 
   wireRecheck(tab);
-  wireIgnoreControls(tab);
+  wireControlBar(tab);
   wireReenable(tab);
+  controlCard.classList.remove("hidden");
 
   const host = hostnameOf(tab.url);
   const rules = await getIgnoreRules();
   if (host && matchesIgnoreRules(host, rules)) {
+    setControlExcluded(true);
     showIgnoredState(tab, rules);
     return;
   }
@@ -351,25 +385,6 @@ function renderResult(result) {
     return;
   }
   if (!result.archived && !result.archiveToday && !result.wayback) {
-    if (result.pageUrl && !saveLinksWired) {
-      saveLinksWired = true;
-      const pageUrl = result.pageUrl;
-      const invalidate = () => {
-        chrome.runtime
-          .sendMessage({ type: "invalidate", url: pageUrl })
-          .catch(() => {});
-      };
-      linkSaveArchive.addEventListener("click", (e) => {
-        e.preventDefault();
-        invalidate();
-        openUrl(`${ARCHIVE_TODAY}/?url=${encodeURIComponent(pageUrl)}`);
-      });
-      linkSaveWayback.addEventListener("click", (e) => {
-        e.preventDefault();
-        invalidate();
-        openUrl(WAYBACK_SAVE + encodeURIComponent(pageUrl));
-      });
-    }
     showState(stateNotArchived);
     return;
   }

@@ -197,6 +197,109 @@
       40% { opacity: 1; transform: scale(1); }
     }
 
+    .control-card {
+      margin-top: 10px;
+      padding: 14px 16px;
+    }
+
+    .control-actions {
+      display: flex;
+      gap: 10px;
+    }
+
+    .control-btn {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      padding: 7px 8px;
+      background: var(--platinum);
+      color: var(--dusk-blue);
+      font-family: inherit;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.2s ease, color 0.2s ease;
+    }
+
+    .control-btn:hover:not(:disabled) {
+      background: var(--icy-blue);
+    }
+
+    .control-btn:active:not(:disabled) {
+      transform: scale(0.97);
+    }
+
+    .control-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .control-btn svg {
+      width: 22px;
+      height: 22px;
+      display: block;
+    }
+
+    .control-label {
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .exclude-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .exclude-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--dusk-blue);
+      text-align: center;
+      margin-bottom: 2px;
+    }
+
+    .exclude-option {
+      padding: 9px 12px;
+      background: var(--steel-blue);
+      color: var(--white);
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 600;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.2s ease, color 0.2s ease;
+    }
+
+    .exclude-option:hover {
+      background: var(--icy-blue);
+      color: var(--dusk-blue);
+    }
+
+    .exclude-option:active {
+      transform: scale(0.98);
+    }
+
+    .exclude-cancel {
+      padding: 7px 12px;
+      background: transparent;
+      color: var(--grey-olive);
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 600;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: color 0.2s ease;
+    }
+
+    .exclude-cancel:hover {
+      color: var(--dusk-blue);
+    }
+
     .hidden { display: none; }
 
     .status-icon {
@@ -269,10 +372,6 @@
       <div class="title">Archived</div>
       <div class="subtitle">Oldest snapshots found</div>
       <div id="results-list"></div>
-      <div class="secondary-links">
-        <a class="link-secondary btn-ignore-host" href="#">Ignore subdomain</a>
-        <a class="link-secondary btn-ignore-domain" href="#">Ignore whole domain</a>
-      </div>
     </div>
 
     <!-- Not Archived State -->
@@ -293,14 +392,6 @@
       <div class="status-icon">&mdash;</div>
       <div class="title">Not Archived</div>
       <div class="message">No archive found for this page.</div>
-      <div class="secondary-links">
-        <a id="link-save-archive" class="link-secondary" href="#">Save to archive.today</a>
-        <a id="link-save-wayback" class="link-secondary" href="#">Save to Wayback Machine</a>
-      </div>
-      <div class="secondary-links">
-        <a class="link-secondary btn-ignore-host" href="#">Ignore subdomain</a>
-        <a class="link-secondary btn-ignore-domain" href="#">Ignore whole domain</a>
-      </div>
     </div>
 
     <!-- Ignored State -->
@@ -338,6 +429,43 @@
       <div class="status-icon">!</div>
       <div class="title">Check Failed</div>
       <div class="message">Could not reach the archive services.</div>
+    </div>
+
+    <!-- Control Bar -->
+    <div id="control-card" class="card control-card hidden">
+      <div id="control-actions" class="control-actions">
+        <button
+          id="btn-archive"
+          type="button"
+          class="control-btn"
+          title="Save this page to archive.today and the Wayback Machine"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="4" width="18" height="4" rx="1"/>
+            <path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/>
+            <path d="M10 12h4"/>
+          </svg>
+          <span class="control-label">Archive page</span>
+        </button>
+        <button
+          id="btn-exclude"
+          type="button"
+          class="control-btn"
+          title="Stop checking archives for this site"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="9"/>
+            <path d="M5.6 5.6l12.8 12.8"/>
+          </svg>
+          <span class="control-label">Exclude site</span>
+        </button>
+      </div>
+      <div id="exclude-panel" class="exclude-panel hidden">
+        <div class="exclude-title">Exclude from checks</div>
+        <button id="btn-exclude-host" type="button" class="exclude-option"></button>
+        <button id="btn-exclude-domain" type="button" class="exclude-option"></button>
+        <button id="btn-exclude-cancel" type="button" class="exclude-cancel">Cancel</button>
+      </div>
     </div>
 
     <div class="footer">
