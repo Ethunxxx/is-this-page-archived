@@ -38,10 +38,44 @@
     }
 
     .card {
+      position: relative;
       background: var(--white);
       border-radius: 12px;
       padding: 24px 20px;
       text-align: center;
+    }
+
+    .btn-recheck {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border: none;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--grey-olive);
+      cursor: pointer;
+      transition: color 0.2s ease, background 0.2s ease;
+    }
+
+    .btn-recheck:hover {
+      color: var(--dusk-blue);
+      background: var(--platinum);
+    }
+
+    .btn-recheck:active {
+      transform: scale(0.95);
+    }
+
+    .btn-recheck svg {
+      width: 16px;
+      height: 16px;
+      display: block;
     }
 
     .title {
@@ -218,13 +252,23 @@
 
     <!-- Archived State -->
     <div id="state-archived" class="card hidden">
+      <button
+        type="button"
+        class="btn-recheck"
+        title="Recheck this page"
+        aria-label="Recheck this page"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+          <path d="M3 3v5h5"/>
+          <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
+          <path d="M16 16h5v5"/>
+        </svg>
+      </button>
       <div class="status-icon">&#10003;</div>
       <div class="title">Archived</div>
       <div class="subtitle">Oldest snapshots found</div>
       <div id="results-list"></div>
-      <div class="secondary-links">
-        <a class="link-secondary btn-recheck" href="#">Recheck</a>
-      </div>
       <div class="secondary-links">
         <a class="link-secondary btn-ignore-host" href="#">Ignore subdomain</a>
         <a class="link-secondary btn-ignore-domain" href="#">Ignore whole domain</a>
@@ -233,15 +277,25 @@
 
     <!-- Not Archived State -->
     <div id="state-not-archived" class="card hidden">
+      <button
+        type="button"
+        class="btn-recheck"
+        title="Recheck this page"
+        aria-label="Recheck this page"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+          <path d="M3 3v5h5"/>
+          <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
+          <path d="M16 16h5v5"/>
+        </svg>
+      </button>
       <div class="status-icon">&mdash;</div>
       <div class="title">Not Archived</div>
       <div class="message">No archive found for this page.</div>
       <div class="secondary-links">
         <a id="link-save-archive" class="link-secondary" href="#">Save to archive.today</a>
         <a id="link-save-wayback" class="link-secondary" href="#">Save to Wayback Machine</a>
-      </div>
-      <div class="secondary-links">
-        <a class="link-secondary btn-recheck" href="#">Recheck</a>
       </div>
       <div class="secondary-links">
         <a class="link-secondary btn-ignore-host" href="#">Ignore subdomain</a>
@@ -268,12 +322,22 @@
 
     <!-- Error State -->
     <div id="state-error" class="card hidden">
+      <button
+        type="button"
+        class="btn-recheck"
+        title="Try checking archives again for this page"
+        aria-label="Try checking archives again for this page"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+          <path d="M3 3v5h5"/>
+          <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
+          <path d="M16 16h5v5"/>
+        </svg>
+      </button>
       <div class="status-icon">!</div>
       <div class="title">Check Failed</div>
       <div class="message">Could not reach the archive services.</div>
-      <div class="secondary-links">
-        <a class="link-secondary btn-recheck" href="#">Try again</a>
-      </div>
     </div>
 
     <div class="footer">
