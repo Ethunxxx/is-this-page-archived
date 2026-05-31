@@ -1,16 +1,20 @@
-import { isCheckableUrl } from "./url-policy.js";
+import { isCheckableUrl, baseDomain, matchesIgnoreRules } from "./url-policy.js";
 
 const ARCHIVE_TODAY = "https://archive.ph";
 const WAYBACK_SAVE = "https://web.archive.org/save/";
+const IGNORE_STORAGE_KEY = "ignoredSites";
 
 const stateLoading = document.getElementById("state-loading");
 const stateArchived = document.getElementById("state-archived");
 const stateNotArchived = document.getElementById("state-not-archived");
 const stateNa = document.getElementById("state-na");
 const stateError = document.getElementById("state-error");
+const stateIgnored = document.getElementById("state-ignored");
 const resultsList = document.getElementById("results-list");
 const linkSaveArchive = document.getElementById("link-save-archive");
 const linkSaveWayback = document.getElementById("link-save-wayback");
+const ignoredMessage = document.getElementById("ignored-message");
+const linkReenable = document.getElementById("link-reenable");
 const loadingMessage = stateLoading.querySelector(".message");
 const archivedSubtitle = stateArchived.querySelector(".subtitle");
 const DEFAULT_LOADING_MESSAGE = "Checking archives...";
@@ -21,9 +25,14 @@ const SERVICE_NAMES = {
 };
 
 function showState(el) {
-  [stateLoading, stateArchived, stateNotArchived, stateNa, stateError].forEach(
-    (s) => s.classList.add("hidden")
-  );
+  [
+    stateLoading,
+    stateArchived,
+    stateNotArchived,
+    stateNa,
+    stateError,
+    stateIgnored,
+  ].forEach((s) => s.classList.add("hidden"));
   el.classList.remove("hidden");
 }
 
@@ -57,6 +66,27 @@ function formatDatetime(dt) {
 
 function openUrl(url) {
   chrome.tabs.create({ url });
+}
+
+function hostnameOf(url) {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+async function getIgnoreRules() {
+  const data = await chrome.storage.local.get(IGNORE_STORAGE_KEY);
+  const raw = data[IGNORE_STORAGE_KEY];
+  return {
+    hosts: Array.isArray(raw?.hosts) ? raw.hosts : [],
+    domains: Array.isArray(raw?.domains) ? raw.domains : [],
+  };
+}
+
+function setIgnoreRules(rules) {
+  return chrome.storage.local.set({ [IGNORE_STORAGE_KEY]: rules });
 }
 
 function createResultRow(serviceName, datetime, url) {
@@ -222,6 +252,61 @@ function wireRecheck(tab) {
   });
 }
 
+function showIgnoredState(tab, rules) {
+  const host = hostnameOf(tab.url);
+  const matchedDomain = (rules.domains || []).find(
+    (d) => host === d || host.endsWith("." + d)
+  );
+  if (matchedDomain) {
+    ignoredMessage.textContent = `Archive checks are turned off for ${matchedDomain} and its subdomains.`;
+  } else {
+    ignoredMessage.textContent = `Archive checks are turned off for ${host}.`;
+  }
+  showState(stateIgnored);
+}
+
+function wireIgnoreControls(tab) {
+  const host = hostnameOf(tab.url);
+  if (!host) return;
+  const domain = baseDomain(host);
+
+  document.querySelectorAll(".btn-ignore-host").forEach((btn) => {
+    btn.textContent = `Ignore ${host}`;
+    btn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      const rules = await getIgnoreRules();
+      if (!rules.hosts.includes(host)) rules.hosts.push(host);
+      await setIgnoreRules(rules);
+      showIgnoredState(tab, rules);
+    });
+  });
+
+  document.querySelectorAll(".btn-ignore-domain").forEach((btn) => {
+    btn.textContent = `Ignore ${domain}`;
+    btn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      const rules = await getIgnoreRules();
+      if (!rules.domains.includes(domain)) rules.domains.push(domain);
+      await setIgnoreRules(rules);
+      showIgnoredState(tab, rules);
+    });
+  });
+}
+
+function wireReenable(tab) {
+  const host = hostnameOf(tab.url);
+  linkReenable.addEventListener("click", async (e) => {
+    e.preventDefault();
+    const rules = await getIgnoreRules();
+    rules.hosts = rules.hosts.filter((h) => h !== host);
+    rules.domains = rules.domains.filter(
+      (d) => !(host === d || host.endsWith("." + d))
+    );
+    await setIgnoreRules(rules);
+    performCheck(tab, { force: true });
+  });
+}
+
 async function init() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) {
@@ -235,10 +320,24 @@ async function init() {
   }
 
   wireRecheck(tab);
+  wireIgnoreControls(tab);
+  wireReenable(tab);
+
+  const host = hostnameOf(tab.url);
+  const rules = await getIgnoreRules();
+  if (host && matchesIgnoreRules(host, rules)) {
+    showIgnoredState(tab, rules);
+    return;
+  }
+
   performCheck(tab, { force: false });
 }
 
 function renderResult(result) {
+  if (result.ignored) {
+    showState(stateIgnored);
+    return;
+  }
   if (result.archived) {
     renderArchivedResult(result);
     return;

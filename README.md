@@ -20,6 +20,7 @@ A minimalist Chrome extension that checks whether the current page has been arch
   - A still-checking status when one service has answered and the other is still running
   - A **Recheck** button to bypass the cache and run a fresh check
   - Links to submit the page to both services if no archive exists
+  - **Ignore** links to stop checking a specific subdomain or a whole domain, with a one-click re-enable
 
 ## Installation
 
@@ -71,7 +72,7 @@ The badge is set per-tab via `chrome.action.setBadgeText`:
 | Checking | Grey `?` while no source has found a snapshot yet and at least one request is still running |
 | Archived (either source) | Dusk Blue `✓` as soon as either source finds a valid snapshot |
 | Not archived | Steel Blue `✕` |
-| Non-checkable URL (non-HTTP(S), private/local, archive service, or explicitly excluded host) | _(no badge)_ |
+| Non-checkable URL (non-HTTP(S), private/local, archive service, or excluded host — built-in or user-ignored) | _(no badge)_ |
 | Error | Red `✕` |
 
 ### Popup states
@@ -82,7 +83,19 @@ The badge is set per-tab via `chrome.action.setBadgeText`:
 | Archived | At least one service returned a valid snapshot; if the other service is still running, the popup shows that too |
 | Not Archived | Both services succeeded and neither had a snapshot — also shows "Save to…" links |
 | Check Failed | Both upstream calls errored, or the popup timed out after 12s |
-| No Page to Check | The active tab isn't an HTTP(S) URL, is on a private/local host, is already on an archive service, or is explicitly excluded |
+| No Page to Check | The active tab isn't an HTTP(S) URL, is on a private/local host, is already on an archive service, or is on a built-in excluded host |
+| Checks Disabled | The user has ignored this site; shows which rule applies and a **Re-enable on this site** link |
+
+### Ignoring sites
+
+The popup lets you turn off archive checks for the current site without touching the code:
+
+- **Ignore subdomain** — skips just the exact hostname (e.g. `news.example.com`), leaving sibling subdomains checkable.
+- **Ignore whole domain** — skips the registrable domain and all its subdomains (e.g. `example.com` covers `www.`, `m.`, etc.).
+
+When you're on an ignored site the popup shows a **Checks Disabled** card with a **Re-enable on this site** link that removes the matching rule.
+
+User ignore rules are stored in `chrome.storage.local` under the `ignoredSites` key (`{ hosts: [...], domains: [...] }`). Because this is local storage, the list is **per browser profile and does not sync to other machines**. The rules are purely additive on top of the built-in `EXCLUDED_HOSTS` / `EXCLUDED_HOST_SUFFIXES` defaults in [`url-policy.js`](url-policy.js); a fresh install starts with an empty user list but the built-in defaults always apply.
 
 ### Caching
 
@@ -128,9 +141,23 @@ archive of itself is not useful:
 - `archive.ph`, `archive.today`, `archive.is`, `archive.md`
 - `web.archive.org`
 
-The extension also skips specific high-traffic hosts to avoid generating
-unnecessary archive-service traffic. See `EXCLUDED_HOSTS` and
-`EXCLUDED_HOST_SUFFIXES` in [`url-policy.js`](url-policy.js).
+The extension also ships with a curated list of high-traffic hosts where a
+snapshot is meaningless (login-gated, personalised, ephemeral, or DRM content)
+— social feeds, webmail, messaging, search engines, streaming, cloud
+storage/app surfaces, and AI chats. This avoids generating unnecessary
+archive-service traffic. Two tiers control the matching:
+
+- `EXCLUDED_HOSTS` — exact hostname matches, used when a domain *also* hosts
+  archivable content (e.g. `www.google.com` is skipped but
+  `docs.cloud.google.com` is still checked).
+- `EXCLUDED_HOST_SUFFIXES` — matches the host and all its subdomains, used to
+  blanket a whole domain (e.g. `facebook.com`) or target a specific dead
+  subdomain (e.g. `docs.google.com`).
+
+Content sites where archives are genuinely useful — news, Wikipedia, blogs,
+public repos, Q&A, documentation — are deliberately left checkable. See
+[`url-policy.js`](url-policy.js) for the full lists. Users can extend these
+defaults with their own ignore rules (see [Ignoring sites](#ignoring-sites)).
 
 ---
 
@@ -158,7 +185,7 @@ is-this-page-archived/
 |---|---|
 | `tabs` | Read the URL of the active tab and react to navigation events |
 | `activeTab` | Access the current tab when the popup is opened |
-| `storage` | Hand results from the service worker to the popup via session storage |
+| `storage` | Hand results from the service worker to the popup via session storage, and persist user ignore rules in local storage |
 | host: `https://archive.ph/*` | TimeMap requests to archive.today |
 | host: `https://archive.today/*` | Allow memento URLs served from the `archive.today` host |
 | host: `https://web.archive.org/*` | CDX API requests and Save Page Now links |

@@ -192,6 +192,10 @@
       <div class="secondary-links">
         <a class="link-secondary btn-recheck" href="#">Recheck</a>
       </div>
+      <div class="secondary-links">
+        <a class="link-secondary btn-ignore-host" href="#">Ignore subdomain</a>
+        <a class="link-secondary btn-ignore-domain" href="#">Ignore whole domain</a>
+      </div>
     </div>
 
     <!-- Not Archived State -->
@@ -205,6 +209,20 @@
       </div>
       <div class="secondary-links">
         <a class="link-secondary btn-recheck" href="#">Recheck</a>
+      </div>
+      <div class="secondary-links">
+        <a class="link-secondary btn-ignore-host" href="#">Ignore subdomain</a>
+        <a class="link-secondary btn-ignore-domain" href="#">Ignore whole domain</a>
+      </div>
+    </div>
+
+    <!-- Ignored State -->
+    <div id="state-ignored" class="card hidden">
+      <div class="status-icon">&#8856;</div>
+      <div class="title">Checks Disabled</div>
+      <div id="ignored-message" class="message">Archive checks are turned off for this site.</div>
+      <div class="secondary-links">
+        <a id="link-reenable" class="link-secondary" href="#">Re-enable on this site</a>
       </div>
     </div>
 

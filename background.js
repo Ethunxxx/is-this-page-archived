@@ -1,4 +1,33 @@
-import { ARCHIVE_TODAY_HOSTS, isCheckableUrl } from "./url-policy.js";
+import { ARCHIVE_TODAY_HOSTS, isCheckableUrl, matchesIgnoreRules } from "./url-policy.js";
+
+const IGNORE_STORAGE_KEY = "ignoredSites";
+let userIgnore = { hosts: [], domains: [] };
+
+function normalizeIgnoreRules(raw) {
+  return {
+    hosts: Array.isArray(raw?.hosts) ? raw.hosts : [],
+    domains: Array.isArray(raw?.domains) ? raw.domains : [],
+  };
+}
+
+silent(
+  chrome.storage.local.get(IGNORE_STORAGE_KEY).then((data) => {
+    userIgnore = normalizeIgnoreRules(data[IGNORE_STORAGE_KEY]);
+  })
+);
+
+function hostnameOf(url) {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return null;
+  }
+}
+
+function isUserIgnored(url) {
+  const host = hostnameOf(url);
+  return host ? matchesIgnoreRules(host, userIgnore) : false;
+}
 
 const ARCHIVE_TODAY_TIMEMAP = "https://archive.ph/timemap/";
 const CDX_API = "https://web.archive.org/cdx/search/cdx";
@@ -241,6 +270,14 @@ async function checkBoth(url, tabId) {
     return;
   }
 
+  // User asked us not to check this site — skip all network calls and let the
+  // popup render its "checks disabled" state.
+  if (isUserIgnored(url)) {
+    clearBadge(tabId);
+    storeResult(tabId, { ignored: true, pageUrl: url });
+    return;
+  }
+
   const cached = cacheGet(url);
   if (cached && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
     await applyResultIfStillCurrent(tabId, url, cached.value);
@@ -471,6 +508,20 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   if (pending) clearTimeout(pending);
   debounceTimers.delete(tabId);
   silent(chrome.storage.session.remove(`tab_${tabId}`));
+});
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !changes[IGNORE_STORAGE_KEY]) return;
+  userIgnore = normalizeIgnoreRules(changes[IGNORE_STORAGE_KEY].newValue);
+  // Re-evaluate the active tab in every window so toggling an ignore rule
+  // takes effect immediately (badge appears/clears) without a reload.
+  chrome.tabs.query({ active: true }, (tabs) => {
+    for (const tab of tabs) {
+      if (!tab.url || !tab.id) continue;
+      cacheDelete(tab.url);
+      debouncedCheck(tab.url, tab.id);
+    }
+  });
 });
 
 chrome.runtime.onMessage.addListener((msg) => {
