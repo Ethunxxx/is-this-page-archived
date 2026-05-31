@@ -430,10 +430,6 @@ function renderFooterVersion() {
   const version = chrome.runtime.getManifest().version;
   const el = document.getElementById("footer-version");
   if (el) el.textContent = `v${version}`;
-  const link = document.getElementById("footer-github");
-  if (link) {
-    link.href = `https://github.com/Ethunxxx/is-this-page-archived/releases/tag/v${version}`;
-  }
 }
 
 renderFooterVersion();
