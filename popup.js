@@ -1,4 +1,9 @@
-import { isCheckableUrl, baseDomain, matchesIgnoreRules } from "./url-policy.js";
+import {
+  isCheckableUrl,
+  baseDomain,
+  isExcludedHost,
+  matchesIgnoreRules,
+} from "./url-policy.js";
 
 const ARCHIVE_TODAY = "https://archive.ph";
 const WAYBACK_SAVE = "https://web.archive.org/save/";
@@ -13,11 +18,13 @@ const stateIgnored = document.getElementById("state-ignored");
 const resultsList = document.getElementById("results-list");
 const ignoredMessage = document.getElementById("ignored-message");
 const linkReenable = document.getElementById("link-reenable");
+const reenableLinks = linkReenable.parentElement;
 const controlCard = document.getElementById("control-card");
 const controlActions = document.getElementById("control-actions");
 const excludePanel = document.getElementById("exclude-panel");
 const btnArchive = document.getElementById("btn-archive");
 const btnExclude = document.getElementById("btn-exclude");
+const btnExcludeLabel = btnExclude.querySelector(".control-label");
 const btnExcludeHost = document.getElementById("btn-exclude-host");
 const btnExcludeDomain = document.getElementById("btn-exclude-domain");
 const btnExcludeCancel = document.getElementById("btn-exclude-cancel");
@@ -81,6 +88,10 @@ function hostnameOf(url) {
   } catch {
     return null;
   }
+}
+
+function isWebUrl(url) {
+  return typeof url === "string" && /^https?:\/\//.test(url);
 }
 
 async function getIgnoreRules() {
@@ -258,16 +269,23 @@ function wireRecheck(tab) {
   });
 }
 
-function showIgnoredState(tab, rules) {
+function showIgnoredState(tab, { source = "manual", rules = {} } = {}) {
   const host = hostnameOf(tab.url);
+
+  if (source === "hardcoded") {
+    ignoredMessage.textContent = `Archive checks are not run for ${host} because this site is excluded by default.`;
+    reenableLinks.classList.add("hidden");
+    showState(stateIgnored);
+    return;
+  }
+
   const matchedDomain = (rules.domains || []).find(
     (d) => host === d || host.endsWith("." + d)
   );
-  if (matchedDomain) {
-    ignoredMessage.textContent = `Archive checks are turned off for ${matchedDomain} and its subdomains.`;
-  } else {
-    ignoredMessage.textContent = `Archive checks are turned off for ${host}.`;
-  }
+  ignoredMessage.textContent = matchedDomain
+    ? `Archive checks are turned off for ${matchedDomain} and its subdomains.`
+    : `Archive checks are turned off for ${host}.`;
+  reenableLinks.classList.remove("hidden");
   showState(stateIgnored);
 }
 
@@ -279,15 +297,33 @@ function showExcludePanel(show) {
 function setControlExcluded(excluded) {
   showExcludePanel(false);
   btnArchive.disabled = excluded;
-  btnExclude.disabled = excluded;
+  btnExclude.disabled = false;
   if (excluded) {
     btnArchive.title = "Archiving is disabled because this site is excluded";
-    btnExclude.title = "This site is already excluded from checks";
+    btnExclude.title = "Re-enable archive checks for this site";
+    btnExclude.dataset.action = "reenable";
+    btnExcludeLabel.textContent = "Re-enable site";
   } else {
     btnArchive.title =
       "Save this page to archive.today and the Wayback Machine";
     btnExclude.title = "Stop checking archives for this site";
+    btnExclude.dataset.action = "exclude";
+    btnExcludeLabel.textContent = "Exclude site";
   }
+}
+
+async function reenableSite(tab) {
+  const host = hostnameOf(tab.url);
+  if (!host) return;
+
+  const rules = await getIgnoreRules();
+  rules.hosts = rules.hosts.filter((h) => h !== host);
+  rules.domains = rules.domains.filter(
+    (d) => !(host === d || host.endsWith("." + d))
+  );
+  await setIgnoreRules(rules);
+  setControlExcluded(false);
+  performCheck(tab, { force: true });
 }
 
 function wireControlBar(tab) {
@@ -302,7 +338,13 @@ function wireControlBar(tab) {
     openUrl(WAYBACK_SAVE + encodeURIComponent(pageUrl));
   });
 
-  btnExclude.addEventListener("click", () => showExcludePanel(true));
+  btnExclude.addEventListener("click", () => {
+    if (btnExclude.dataset.action === "reenable") {
+      reenableSite(tab);
+      return;
+    }
+    showExcludePanel(true);
+  });
   btnExcludeCancel.addEventListener("click", () => showExcludePanel(false));
 
   btnExcludeHost.textContent = `Only ${host}`;
@@ -312,7 +354,7 @@ function wireControlBar(tab) {
     if (!rules.hosts.includes(host)) rules.hosts.push(host);
     await setIgnoreRules(rules);
     setControlExcluded(true);
-    showIgnoredState(tab, rules);
+    showIgnoredState(tab, { source: "manual", rules });
   });
 
   btnExcludeDomain.textContent = `${domain} and all subdomains`;
@@ -322,21 +364,14 @@ function wireControlBar(tab) {
     if (!rules.domains.includes(domain)) rules.domains.push(domain);
     await setIgnoreRules(rules);
     setControlExcluded(true);
-    showIgnoredState(tab, rules);
+    showIgnoredState(tab, { source: "manual", rules });
   });
 }
 
 function wireReenable(tab) {
-  const host = hostnameOf(tab.url);
   linkReenable.addEventListener("click", async (e) => {
     e.preventDefault();
-    const rules = await getIgnoreRules();
-    rules.hosts = rules.hosts.filter((h) => h !== host);
-    rules.domains = rules.domains.filter(
-      (d) => !(host === d || host.endsWith("." + d))
-    );
-    await setIgnoreRules(rules);
-    performCheck(tab, { force: true });
+    await reenableSite(tab);
   });
 }
 
@@ -344,6 +379,17 @@ async function init() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) {
     showState(stateError);
+    return;
+  }
+
+  const host = hostnameOf(tab.url);
+  if (!isWebUrl(tab.url) || !host) {
+    showState(stateNa);
+    return;
+  }
+
+  if (isExcludedHost(host)) {
+    showIgnoredState(tab, { source: "hardcoded" });
     return;
   }
 
@@ -357,11 +403,10 @@ async function init() {
   wireReenable(tab);
   controlCard.classList.remove("hidden");
 
-  const host = hostnameOf(tab.url);
   const rules = await getIgnoreRules();
   if (host && matchesIgnoreRules(host, rules)) {
     setControlExcluded(true);
-    showIgnoredState(tab, rules);
+    showIgnoredState(tab, { source: "manual", rules });
     return;
   }
 
@@ -370,7 +415,12 @@ async function init() {
 
 function renderResult(result) {
   if (result.ignored) {
-    showState(stateIgnored);
+    getIgnoreRules()
+      .then((rules) => {
+        setControlExcluded(true);
+        showIgnoredState({ url: result.pageUrl }, { source: "manual", rules });
+      })
+      .catch(() => showState(stateIgnored));
     return;
   }
   if (result.archived) {
