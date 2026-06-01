@@ -121,6 +121,22 @@ function urlsMatch(a, b) {
   return normalizeUrl(a) === normalizeUrl(b);
 }
 
+function storedResultApplies(result, url) {
+  return (
+    result &&
+    !result.checking &&
+    !result.ignored &&
+    result.pageUrl &&
+    urlsMatch(result.pageUrl, url)
+  );
+}
+
+async function getStoredTabResult(tabId) {
+  const key = `tab_${tabId}`;
+  const data = await chrome.storage.session.get(key);
+  return data[key];
+}
+
 function isTrackingParamName(name) {
   const normalized = name.toLowerCase();
   return normalized.startsWith("utm_") || TRACKING_QUERY_PARAMS.has(normalized);
@@ -513,6 +529,21 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
   try {
     const tab = await chrome.tabs.get(activeInfo.tabId);
     if (!tab.url) return;
+    if (!isCheckableUrl(tab.url)) {
+      clearBadge(tab.id);
+      storeResult(tab.id, null);
+      return;
+    }
+    if (isUserIgnored(tab.url)) {
+      clearBadge(tab.id);
+      storeResult(tab.id, { ignored: true, pageUrl: tab.url });
+      return;
+    }
+    const stored = await getStoredTabResult(tab.id);
+    if (storedResultApplies(stored, tab.url)) {
+      applyResult(tab.id, stored);
+      return;
+    }
     const cached = cacheGet(tab.url);
     if (cached && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
       applyResult(tab.id, cached.value);
