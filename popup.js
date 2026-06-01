@@ -25,6 +25,7 @@ const loadingMessage = stateLoading.querySelector(".message");
 const archivedSubtitle = stateArchived.querySelector(".subtitle");
 const DEFAULT_LOADING_MESSAGE = "Checking archives...";
 const DEFAULT_ARCHIVED_SUBTITLE = "Oldest snapshots found";
+const POPUP_CHECK_TIMEOUT_MS = 15000;
 const SERVICE_NAMES = {
   archiveToday: "archive.today",
   wayback: "Wayback Machine",
@@ -222,12 +223,12 @@ function performCheck(tab, { force }) {
     }
     // Tell the service worker to run the check. Without this, a cold-
     // respawned SW with no pending tab event would never check this tab
-    // and the popup would just sit on the loading state until the 12s
-    // timeout. The force flag is only set by the Recheck button.
+    // and the popup would just sit on the loading state until its timeout.
+    // The force flag is only set by the Recheck button.
     chrome.runtime
       .sendMessage({ type: "check", tabId: tab.id, url: tab.url, force: !!force })
       .catch(() => {});
-    timeoutId = setTimeout(() => finalize(null), 12000);
+    timeoutId = setTimeout(() => finalize(null), POPUP_CHECK_TIMEOUT_MS);
   };
 
   if (force) {

@@ -43,7 +43,7 @@ After you open a page (follow a link, enter a URL, or refresh), the service work
 
 | Service | Endpoint | Method |
 |---|---|---|
-| archive.today | `https://archive.ph/timemap/<url>` | Memento TimeMap (RFC 7089) |
+| archive.today | `https://archive.today/timemap/<url>` with alias fallbacks | Memento TimeMap (RFC 7089) |
 | Wayback Machine | `https://web.archive.org/cdx/search/cdx?url=<url>&output=json&limit=1&fl=timestamp,original&sort=oldest` | CDX API |
 
 Both APIs return structured data with no anti-bot restrictions.
@@ -82,7 +82,7 @@ The badge is set per-tab via `chrome.action.setBadgeText`:
 | Checking | Fetches are in flight and no snapshot has been found yet; if one service already missed, the popup says which one is still checking |
 | Archived | At least one service returned a valid snapshot; if the other service is still running, the popup shows that too |
 | Not Archived | Both services succeeded and neither had a snapshot — also shows "Save to…" links |
-| Check Failed | Both upstream calls errored, or the popup timed out after 12s |
+| Check Failed | Both upstream calls errored, or the popup timed out after 30s |
 | No Page to Check | The active tab isn't an HTTP(S) URL, is on a private/local host, is already on an archive service, or is on a built-in excluded host |
 | Checks Disabled | The user has ignored this site; shows which rule applies and a **Re-enable on this site** link |
 
@@ -114,7 +114,7 @@ Clicking a "Save to…" link in the popup invalidates that URL's cache entry so 
 
 ### Robustness
 
-- **Fetch timeout**: each upstream call is aborted after 10s; the popup gives up after 12s and shows the error state.
+- **Fetch timeout**: Wayback calls are aborted after 10s; archive.today aliases are tried with shorter per-alias timeouts; the popup gives up after 30s and shows the error state.
 - **Debouncing**: tab updates are debounced 300ms so a redirect chain only triggers one check.
 - **Tab-navigation race protection**: if the tab navigates away while a fetch is in flight, the result is dropped instead of painted onto the new page.
 - **Tab activation**: switching to a tab triggers a check (served from cache if fresh).
@@ -186,8 +186,7 @@ is-this-page-archived/
 | `tabs` | Read the URL of the active tab and react to navigation events |
 | `activeTab` | Access the current tab when the popup is opened |
 | `storage` | Hand results from the service worker to the popup via session storage, and persist user ignore rules in local storage |
-| host: `https://archive.ph/*` | TimeMap requests to archive.today |
-| host: `https://archive.today/*` | Allow memento URLs served from the `archive.today` host |
+| host: `https://archive.ph/*`, `https://archive.today/*`, `https://archive.is/*`, `https://archive.md/*` | TimeMap requests to archive.today aliases and archive.today memento links |
 | host: `https://web.archive.org/*` | CDX API requests and Save Page Now links |
 
 ---

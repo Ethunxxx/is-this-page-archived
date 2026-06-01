@@ -29,7 +29,12 @@ function isUserIgnored(url) {
   return host ? matchesIgnoreRules(host, userIgnore) : false;
 }
 
-const ARCHIVE_TODAY_TIMEMAP = "https://archive.ph/timemap/";
+const ARCHIVE_TODAY_TIMEMAP_HOSTS = [
+  "archive.today",
+  "archive.ph",
+  "archive.is",
+  "archive.md",
+];
 const CDX_API = "https://web.archive.org/cdx/search/cdx";
 const BADGE_COLOR = "#274C77";
 const BADGE_NOT_ARCHIVED_COLOR = "#6096BA";
@@ -37,6 +42,7 @@ const BADGE_CHECKING_COLOR = "#8B8C89";
 const BADGE_ERROR_COLOR = "#C1121F";
 const BADGE_TEXT_COLOR = "#FFFFFF";
 const FETCH_TIMEOUT_MS = 10000;
+const ARCHIVE_TODAY_FETCH_TIMEOUT_MS = 5000;
 const CACHE_TTL_MS = 60 * 60 * 1000;
 const TRACKING_QUERY_PARAMS = new Set([
   "_ga",
@@ -92,9 +98,9 @@ function cacheDelete(url) {
   cache.delete(cacheKey(url));
 }
 
-function makeAbortable() {
+function makeAbortable(timeoutMs = FETCH_TIMEOUT_MS) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   return { signal: controller.signal, clearTimer: () => clearTimeout(timer) };
 }
 
@@ -167,9 +173,24 @@ function isArchiveTodayHost(urlStr) {
 }
 
 async function checkArchiveToday(url) {
-  const { signal, clearTimer } = makeAbortable();
+  let lastError = null;
+  for (const host of ARCHIVE_TODAY_TIMEMAP_HOSTS) {
+    try {
+      return await fetchArchiveTodayTimemap(url, host);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error("archive.today unavailable");
+}
+
+async function fetchArchiveTodayTimemap(url, host) {
+  const { signal, clearTimer } = makeAbortable(ARCHIVE_TODAY_FETCH_TIMEOUT_MS);
   try {
-    const resp = await fetch(ARCHIVE_TODAY_TIMEMAP + encodeURIComponent(url), { signal });
+    const resp = await fetch(
+      `https://${host}/timemap/${encodeURIComponent(url)}`,
+      { signal }
+    );
     clearTimer();
     // 408/425/429: rate-limit / try-again — transient. 5xx: transient.
     // Other 4xx: treat as "no snapshot" (cacheable).

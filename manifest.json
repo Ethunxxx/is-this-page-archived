@@ -7,7 +7,9 @@
   "host_permissions": [
     "https://web.archive.org/*",
     "https://archive.ph/*",
-    "https://archive.today/*"
+    "https://archive.today/*",
+    "https://archive.is/*",
+    "https://archive.md/*"
   ],
   "background": {
     "service_worker": "background.js",
