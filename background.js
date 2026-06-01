@@ -41,6 +41,18 @@ const BADGE_NOT_ARCHIVED_COLOR = "#6096BA";
 const BADGE_CHECKING_COLOR = "#8B8C89";
 const BADGE_ERROR_COLOR = "#C1121F";
 const BADGE_TEXT_COLOR = "#FFFFFF";
+const ACTIVE_ICON_PATHS = {
+  16: "icons/icon-16.png",
+  32: "icons/icon-32.png",
+  48: "icons/icon-48.png",
+  128: "icons/icon-128.png",
+};
+const INACTIVE_ICON_PATHS = {
+  16: "icons/icon-gray-16.png",
+  32: "icons/icon-gray-32.png",
+  48: "icons/icon-gray-48.png",
+  128: "icons/icon-gray-128.png",
+};
 const FETCH_TIMEOUT_MS = 10000;
 const ARCHIVE_TODAY_FETCH_TIMEOUT_MS = 5000;
 const CACHE_TTL_MS = 60 * 60 * 1000;
@@ -302,6 +314,7 @@ function formatWaybackTimestamp(ts) {
 
 async function checkBoth(url, tabId) {
   if (!isCheckableUrl(url)) {
+    setInactiveIcon(tabId);
     clearBadge(tabId);
     storeResult(tabId, null);
     return;
@@ -310,10 +323,13 @@ async function checkBoth(url, tabId) {
   // User asked us not to check this site — skip all network calls and let the
   // popup render its "checks disabled" state.
   if (isUserIgnored(url)) {
+    setInactiveIcon(tabId);
     clearBadge(tabId);
     storeResult(tabId, { ignored: true, pageUrl: url });
     return;
   }
+
+  setActiveIcon(tabId);
 
   const cached = cacheGet(url);
   if (cached && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
@@ -469,6 +485,9 @@ async function applyResultIfStillCurrent(tabId, url, result) {
 }
 
 function applyResult(tabId, result) {
+  if (result) setActiveIcon(tabId);
+  else setInactiveIcon(tabId);
+
   if (result && result.archived) {
     setBadge(tabId, "✓", BADGE_COLOR);
   } else if (result && result.checking) {
@@ -493,7 +512,20 @@ function clearBadge(tabId) {
   silent(chrome.action.setBadgeText({ text: "", tabId }));
 }
 
+function setActiveIcon(tabId) {
+  setActionIcon(tabId, ACTIVE_ICON_PATHS);
+}
+
+function setInactiveIcon(tabId) {
+  setActionIcon(tabId, INACTIVE_ICON_PATHS);
+}
+
+function setActionIcon(tabId, path) {
+  silent(chrome.action.setIcon({ path, tabId }));
+}
+
 function setBadgeLoading(tabId, url) {
+  setActiveIcon(tabId);
   setBadge(tabId, "?", BADGE_CHECKING_COLOR);
   // Mark in-flight so the popup doesn't render a stale result for this tab
   // while the badge already shows "?".
@@ -520,21 +552,33 @@ function debouncedCheck(url, tabId) {
 }
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status === "complete" && tab.url) {
+  if (changeInfo.status !== "complete") return;
+  if (tab.url) {
     debouncedCheck(tab.url, tabId);
+    return;
   }
+  setInactiveIcon(tabId);
+  clearBadge(tabId);
+  storeResult(tabId, null);
 });
 
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
   try {
     const tab = await chrome.tabs.get(activeInfo.tabId);
-    if (!tab.url) return;
+    if (!tab.url) {
+      setInactiveIcon(activeInfo.tabId);
+      clearBadge(activeInfo.tabId);
+      storeResult(activeInfo.tabId, null);
+      return;
+    }
     if (!isCheckableUrl(tab.url)) {
+      setInactiveIcon(tab.id);
       clearBadge(tab.id);
       storeResult(tab.id, null);
       return;
     }
     if (isUserIgnored(tab.url)) {
+      setInactiveIcon(tab.id);
       clearBadge(tab.id);
       storeResult(tab.id, { ignored: true, pageUrl: tab.url });
       return;
@@ -548,6 +592,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
     if (cached && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
       applyResult(tab.id, cached.value);
     } else {
+      setActiveIcon(tab.id);
       debouncedCheck(tab.url, tab.id);
     }
   } catch {

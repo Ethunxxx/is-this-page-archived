@@ -65,15 +65,15 @@ URL matching is done after normalization (see below) so trivial differences like
 
 ### Badge
 
-The badge is set per-tab via `chrome.action.setBadgeText`:
+The badge and icon are set per-tab via `chrome.action`:
 
-| State | Badge |
+| State | Icon / Badge |
 |---|---|
-| Checking | Grey `?` while no source has found a snapshot yet and at least one request is still running |
-| Archived (either source) | Dusk Blue `✓` as soon as either source finds a valid snapshot |
-| Not archived | Steel Blue `✕` |
-| Non-checkable URL (non-HTTP(S), private/local, archive service, or excluded host — built-in or user-ignored) | _(no badge)_ |
-| Error | Red `✕` |
+| Checking | Normal icon, Grey `?` while no source has found a snapshot yet and at least one request is still running |
+| Archived (either source) | Normal icon, Dusk Blue `✓` as soon as either source finds a valid snapshot |
+| Not archived | Normal icon, Steel Blue `✕` |
+| Non-checkable URL (non-HTTP(S), private/local, archive service, or excluded host — built-in or user-ignored) | Grey icon, no badge |
+| Error | Normal icon, Red `✕` |
 
 ### Popup states
 
@@ -174,7 +174,11 @@ is-this-page-archived/
     ├── icon-16.png
     ├── icon-32.png
     ├── icon-48.png
-    └── icon-128.png
+    ├── icon-128.png
+    ├── icon-gray-16.png
+    ├── icon-gray-32.png
+    ├── icon-gray-48.png
+    └── icon-gray-128.png
 ```
 
 ---
