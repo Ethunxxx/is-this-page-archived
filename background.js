@@ -78,6 +78,13 @@ const TRACKING_QUERY_PARAMS = new Set([
   "wbraid",
   "yclid",
 ]);
+const SUBSTACK_DECORATION_QUERY_PARAMS = new Set([
+  "isfreemail",
+  "post_id",
+  "publication_id",
+  "r",
+  "triedredirect",
+]);
 
 const cache = new Map();
 const inflight = new Map();
@@ -154,14 +161,14 @@ function isTrackingParamName(name) {
   return normalized.startsWith("utm_") || TRACKING_QUERY_PARAMS.has(normalized);
 }
 
-function stripTrackingParams(url) {
+function stripQueryParams(url, shouldStrip) {
   try {
     const parsed = new URL(url);
     if (!parsed.search) return url;
 
     const namesToRemove = new Set();
     for (const [name] of parsed.searchParams) {
-      if (isTrackingParamName(name)) namesToRemove.add(name);
+      if (shouldStrip(name, parsed)) namesToRemove.add(name);
     }
     if (!namesToRemove.size) return url;
 
@@ -175,12 +182,39 @@ function stripTrackingParams(url) {
   }
 }
 
+function stripTrackingParams(url) {
+  return stripQueryParams(url, isTrackingParamName);
+}
+
+function hasSubstackDecorationParams(parsed) {
+  for (const [name] of parsed.searchParams) {
+    if (SUBSTACK_DECORATION_QUERY_PARAMS.has(name.toLowerCase())) return true;
+  }
+  return false;
+}
+
+function isLikelySubstackArticleUrl(parsed) {
+  return parsed.pathname.startsWith("/p/") && hasSubstackDecorationParams(parsed);
+}
+
+function stripSubstackDecorationParams(url) {
+  return stripQueryParams(url, (name, parsed) => {
+    if (!isLikelySubstackArticleUrl(parsed)) return false;
+    return SUBSTACK_DECORATION_QUERY_PARAMS.has(name.toLowerCase());
+  });
+}
+
+function addLookupCandidate(candidates, candidate) {
+  if (!candidates.some((existing) => normalizeUrl(existing) === normalizeUrl(candidate))) {
+    candidates.push(candidate);
+  }
+}
+
 function lookupCandidates(url) {
   const candidates = [url];
   const stripped = stripTrackingParams(url);
-  if (normalizeUrl(stripped) !== normalizeUrl(url)) {
-    candidates.push(stripped);
-  }
+  addLookupCandidate(candidates, stripped);
+  addLookupCandidate(candidates, stripSubstackDecorationParams(stripped));
   return candidates;
 }
 
@@ -202,13 +236,17 @@ function isArchiveTodayHost(urlStr) {
 
 async function checkArchiveToday(url) {
   let lastError = null;
+  let sawReachableHost = false;
   for (const host of ARCHIVE_TODAY_TIMEMAP_HOSTS) {
     try {
-      return await fetchArchiveTodayTimemap(url, host);
+      const result = await fetchArchiveTodayTimemap(url, host);
+      sawReachableHost = true;
+      if (result) return result;
     } catch (err) {
       lastError = err;
     }
   }
+  if (sawReachableHost) return null;
   throw lastError || new Error("archive.today unavailable");
 }
 

@@ -53,6 +53,9 @@ tracking parameters such as `utm_*`, `_gl`, `_ga`, `fbclid`, `gclid`,
 `gad_source`, or `source`, the service worker retries the lookup with those
 parameters removed. This catches shared links whose archived copy exists under
 the clean canonical URL while leaving meaningful query parameters intact.
+Substack article links also fall back from email/share URLs under `/p/...` to
+their canonical article URL when parameters such as `publication_id`, `post_id`,
+`isFreemail`, `r`, or `triedRedirect` are present.
 
 ### Response validation
 
