@@ -36,6 +36,7 @@ const ARCHIVE_TODAY_TIMEMAP_HOSTS = [
   "archive.md",
 ];
 const CDX_API = "https://web.archive.org/cdx/search/cdx";
+const WAYBACK_AVAILABLE_API = "https://archive.org/wayback/available";
 const BADGE_COLOR = "#274C77";
 const BADGE_NOT_ARCHIVED_COLOR = "#6096BA";
 const BADGE_CHECKING_COLOR = "#8B8C89";
@@ -226,6 +227,11 @@ function extractOriginalFromMementoUrl(mementoUrl) {
   return m ? m[1] : null;
 }
 
+function extractOriginalFromWaybackUrl(mementoUrl) {
+  const m = mementoUrl.match(/^https?:\/\/web\.archive\.org\/web\/[^/]+\/(https?:\/\/.+)$/);
+  return m ? m[1] : null;
+}
+
 function isArchiveTodayHost(urlStr) {
   try {
     return ARCHIVE_TODAY_HOSTS.has(new URL(urlStr).hostname.toLowerCase());
@@ -309,6 +315,17 @@ async function fetchArchiveTodayTimemap(url, host) {
 }
 
 async function checkWayback(url) {
+  const fallback = checkWaybackAvailable(url).catch(() => null);
+  try {
+    return await checkWaybackCdx(url);
+  } catch (err) {
+    const fallbackResult = await fallback;
+    if (fallbackResult) return fallbackResult;
+    throw err;
+  }
+}
+
+async function checkWaybackCdx(url) {
   const { signal, clearTimer } = makeAbortable();
   try {
     const params = new URLSearchParams({
@@ -335,6 +352,35 @@ async function checkWayback(url) {
     return {
       url: `https://web.archive.org/web/${timestamp}/${original}`,
       datetime: formatWaybackTimestamp(timestamp),
+    };
+  } catch (err) {
+    clearTimer();
+    throw err;
+  }
+}
+
+async function checkWaybackAvailable(url) {
+  const { signal, clearTimer } = makeAbortable();
+  try {
+    const params = new URLSearchParams({ url });
+    const resp = await fetch(`${WAYBACK_AVAILABLE_API}?${params}`, { signal });
+    clearTimer();
+    if (resp.status === 408 || resp.status === 425 || resp.status === 429) {
+      throw new Error(`wayback availability HTTP ${resp.status}`);
+    }
+    if (resp.status >= 400 && resp.status < 500) return null;
+    if (!resp.ok) throw new Error(`wayback availability HTTP ${resp.status}`);
+
+    const data = await resp.json();
+    const closest = data?.archived_snapshots?.closest;
+    if (!closest?.available || !closest.url || !closest.timestamp) return null;
+
+    const original = extractOriginalFromWaybackUrl(closest.url);
+    if (original && !urlsMatch(original, url)) return null;
+
+    return {
+      url: closest.url.replace(/^http:\/\//, "https://"),
+      datetime: formatWaybackTimestamp(closest.timestamp),
     };
   } catch (err) {
     clearTimer();

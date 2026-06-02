@@ -44,7 +44,7 @@ After you open a page (follow a link, enter a URL, or refresh), the service work
 | Service | Endpoint | Method |
 |---|---|---|
 | archive.today | `https://archive.today/timemap/<url>` with alias fallbacks | Memento TimeMap (RFC 7089) |
-| Wayback Machine | `https://web.archive.org/cdx/search/cdx?url=<url>&output=json&limit=1&fl=timestamp,original&sort=oldest` | CDX API |
+| Wayback Machine | `https://web.archive.org/cdx/search/cdx?url=<url>&output=json&limit=1&fl=timestamp,original&sort=oldest`, with `https://archive.org/wayback/available?url=<url>` as an error fallback | CDX API, then availability API |
 
 Both APIs return structured data with no anti-bot restrictions.
 
@@ -85,7 +85,7 @@ The badge and icon are set per-tab via `chrome.action`:
 | Checking | Fetches are in flight and no snapshot has been found yet; if one service already missed, the popup says which one is still checking |
 | Archived | At least one service returned a valid snapshot; if the other service is still running, the popup shows that too |
 | Not Archived | Both services succeeded and neither had a snapshot — also shows "Save to…" links |
-| Check Failed | Both upstream calls errored, or the popup timed out after 30s |
+| Check Failed | Both upstream calls errored, or the popup timed out after 15s |
 | No Page to Check | The active tab isn't an HTTP(S) URL, is on a private/local host, is already on an archive service, or is on a built-in excluded host |
 | Checks Disabled | The user has ignored this site; shows which rule applies and a **Re-enable on this site** link |
 
@@ -114,10 +114,14 @@ The cache is keyed by a normalized form of the URL: `www.` stripped, host lowerc
 Clicking a "Save to…" link in the popup invalidates that URL's cache entry so the next visit re-checks instead of returning the stale "not archived" result. The **Recheck** button does the same, then forces an immediate fresh check.
 
 `chrome.storage.session` is used to hand results from the service worker to the popup, keyed by tab ID.
+When Wayback's CDX API is temporarily unavailable, the extension falls back to
+Wayback's availability API. That fallback returns the closest available
+snapshot rather than the oldest snapshot, but only runs when the oldest-snapshot
+lookup failed.
 
 ### Robustness
 
-- **Fetch timeout**: Wayback calls are aborted after 10s; archive.today aliases are tried with shorter per-alias timeouts; the popup gives up after 30s and shows the error state.
+- **Fetch timeout**: Wayback calls are aborted after 10s; archive.today aliases are tried with shorter per-alias timeouts; the popup gives up after 15s and shows the error state.
 - **Debouncing**: tab updates are debounced 300ms so a redirect chain only triggers one check.
 - **Tab-navigation race protection**: if the tab navigates away while a fetch is in flight, the result is dropped instead of painted onto the new page.
 - **Tab activation**: switching to a tab triggers a check (served from cache if fresh).
@@ -195,6 +199,7 @@ is-this-page-archived/
 | `storage` | Hand results from the service worker to the popup via session storage, and persist user ignore rules in local storage |
 | host: `https://archive.ph/*`, `https://archive.today/*`, `https://archive.is/*`, `https://archive.md/*` | TimeMap requests to archive.today aliases and archive.today memento links |
 | host: `https://web.archive.org/*` | CDX API requests and Save Page Now links |
+| host: `https://archive.org/*` | Wayback availability fallback requests |
 
 ---
 

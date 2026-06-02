@@ -5,6 +5,7 @@
   "description": "Check if the current page has been archived on archive.today or the Wayback Machine and jump to the oldest snapshot.",
   "permissions": ["activeTab", "tabs", "storage"],
   "host_permissions": [
+    "https://archive.org/*",
     "https://web.archive.org/*",
     "https://archive.ph/*",
     "https://archive.today/*",
