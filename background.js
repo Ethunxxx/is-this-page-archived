@@ -424,25 +424,85 @@ async function fetchBoth(url, onProgress = () => {}) {
     const candidate = candidates[i];
     const isLastCandidate = i === candidates.length - 1;
     const checked = await fetchCandidate(candidate, (candidateResult) => {
-      const progress = withPageMetadata(candidateResult, url);
-      // If the exact URL missed and we still have the stripped tracking-param
-      // fallback to try, don't briefly flash a final "not archived" state.
-      if (!isLastCandidate && !progress.checking && !progress.archived && !progress.error) {
-        return;
-      }
+      // Progress from a later URL candidate should preserve snapshots already
+      // found on earlier candidates. If more fallbacks remain, keep missing
+      // services pending so the popup does not finalize too early.
+      const mergedProgress = mergeCandidateResults(result, candidateResult);
+      const progressResult =
+        !isLastCandidate && !hasAllSnapshots(mergedProgress) && !mergedProgress.error
+          ? withPendingFallbackServices(mergedProgress)
+          : mergedProgress;
+      const progress = withPageMetadata(progressResult, url);
       onProgress(progress);
     });
     cacheable = cacheable && checked.cacheable;
-    result = withPageMetadata(checked, url);
-    if (checked.error) result.error = true;
-    if (checked.archived || checked.error) break;
+    result = mergeCandidateResults(result, checked);
+    if (hasAllSnapshots(result) || checked.error) break;
   }
 
+  result = withPageMetadata(result, url);
   if (cacheable) {
     cacheSet(url, { value: result, cachedAt: Date.now() });
   }
 
   return result;
+}
+
+function hasAllSnapshots(result) {
+  return !!(result?.archiveToday && result?.wayback);
+}
+
+function withPendingFallbackServices(result) {
+  const services = { ...result.services };
+  if (!result.archiveToday) services.archiveToday = "checking";
+  if (!result.wayback) services.wayback = "checking";
+  return {
+    ...result,
+    checking: true,
+    services,
+  };
+}
+
+function mergeServiceStatus(previous, next, value) {
+  if (value) return "found";
+  if (previous === "found" || next === "found") return "found";
+  if (previous === "checking" || next === "checking") return "checking";
+  if (previous === "error" || next === "error") return "error";
+  return "not_found";
+}
+
+function mergeCandidateResults(previous, next) {
+  if (!previous) {
+    return {
+      ...next,
+      services: { ...next.services },
+    };
+  }
+
+  const archiveToday = previous.archiveToday || next.archiveToday;
+  const wayback = previous.wayback || next.wayback;
+  const services = {
+    archiveToday: mergeServiceStatus(
+      previous.services.archiveToday,
+      next.services.archiveToday,
+      archiveToday
+    ),
+    wayback: mergeServiceStatus(previous.services.wayback, next.services.wayback, wayback),
+  };
+  const merged = {
+    archived: !!(archiveToday || wayback),
+    archiveToday,
+    wayback,
+    checking: Object.values(services).includes("checking"),
+    cacheable: previous.cacheable && next.cacheable,
+    services,
+  };
+
+  if (services.archiveToday === "error" && services.wayback === "error") {
+    merged.error = true;
+  }
+
+  return merged;
 }
 
 async function fetchCandidate(url, onProgress) {
