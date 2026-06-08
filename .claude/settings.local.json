@@ -4,7 +4,20 @@
       "Bash(node --check \"C:\\\\Users\\\\richa\\\\Documents\\\\is-this-page-archived\\\\background.js\")",
       "Bash(node --check \"C:\\\\Users\\\\richa\\\\Documents\\\\is-this-page-archived\\\\popup.js\")",
       "Bash(node -e \"JSON.parse\\(require\\('fs'\\).readFileSync\\('C:/Users/richa/Documents/is-this-page-archived/manifest.json','utf8'\\)\\); console.log\\('manifest OK'\\)\")",
-      "Bash(node -e \"JSON.parse\\(require\\('fs'\\).readFileSync\\('C:/Users/richa/Documents/is-this-page-archived/manifest.json','utf8'\\)\\)\")"
+      "Bash(node -e \"JSON.parse\\(require\\('fs'\\).readFileSync\\('C:/Users/richa/Documents/is-this-page-archived/manifest.json','utf8'\\)\\)\")",
+      "Bash(curl -s --max-time 20 \"https://archive.ph/timemap/https://www.brethorsting.com/blog/2026/05/domain-expertise-has-always-been-the-real-moat/\")",
+      "Bash(curl -s --max-time 20 \"https://archive.ph/timemap/https://www.brethorsting.com/blog/2026/05/domain-expertise-has-always-been-the-real-moat\")",
+      "Bash(curl -s --max-time 20 \"https://archive.ph/timemap/https://www.brethorsting.com/blog/2026/05/domain-expertise-has-always-been-the-real-moat/?__readwiseLocation=\")",
+      "Bash(curl -s --max-time 20 \"https://archive.ph/timemap/https://brethorsting.com/blog/2026/05/domain-expertise-has-always-been-the-real-moat/\")",
+      "Bash(node --check background.js)",
+      "Bash(node --check url-policy.js)",
+      "Bash(node --check popup.js)",
+      "Bash(node -e \"JSON.parse\\(require\\('fs'\\).readFileSync\\('manifest.json'\\)\\); console.log\\('manifest.json: valid JSON, version', JSON.parse\\(require\\('fs'\\).readFileSync\\('manifest.json'\\)\\).version\\)\")",
+      "Bash(curl -s --max-time 30 \"https://web.archive.org/cdx/search/cdx?url=https://www.brethorsting.com/blog/2026/05/&matchType=prefix&output=json&fl=original&collapse=urlkey&limit=40\")",
+      "Bash(curl -s --max-time 30 \"https://web.archive.org/cdx/search/cdx?url=brethorsting.com&matchType=domain&output=json&fl=original&collapse=urlkey&limit=15&filter=original:.*%5C%3F.*\")",
+      "Bash(curl -s --max-time 30 \"https://web.archive.org/cdx/search/cdx?url=https://www.brethorsting.com/blog/2025/07/state-capacity-and-eight-parking-spaces/&matchType=prefix&output=json&fl=timestamp,original&collapse=urlkey&limit=20\")",
+      "Bash(curl -s --max-time 30 \"https://web.archive.org/cdx/search/cdx?url=https://www.brethorsting.com/blog/2025/07/state-capacity-and-eight-parking-spaces&matchType=prefix&output=json&fl=original&collapse=urlkey&limit=20\")",
+      "Bash(node -e \"console.log\\('node', process.version\\); console.log\\('global fetch:', typeof fetch\\)\")"
     ]
   }
 }

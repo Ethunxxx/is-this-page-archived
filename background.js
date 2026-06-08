@@ -160,7 +160,15 @@ async function getStoredTabResult(tabId) {
 
 function isTrackingParamName(name) {
   const normalized = name.toLowerCase();
-  return normalized.startsWith("utm_") || TRACKING_QUERY_PARAMS.has(normalized);
+  // utm_* (analytics) and __readwise* (Readwise Reader decoration, e.g.
+  // __readwiseLocation appended to every link opened from Reader) are
+  // vendor-namespaced junk added to arbitrary URLs with no effect on page
+  // content. Strip the whole family by prefix rather than enumerating each.
+  return (
+    normalized.startsWith("utm_") ||
+    normalized.startsWith("__readwise") ||
+    TRACKING_QUERY_PARAMS.has(normalized)
+  );
 }
 
 function stripQueryParams(url, shouldStrip) {
@@ -376,12 +384,19 @@ async function fetchArchiveTodayTimemap(url, host) {
 async function checkWayback(url) {
   const fallback = checkWaybackAvailable(url).catch(() => null);
   try {
-    return await checkWaybackCdx(url);
+    const exact = await checkWaybackCdx(url);
+    if (exact) return exact;
   } catch (err) {
     const fallbackResult = await fallback;
     if (fallbackResult) return fallbackResult;
     throw err;
   }
+  // Exact CDX succeeded but found no snapshot for this precise URL. Before
+  // concluding "not archived", sweep for a same-page capture that differs only
+  // by junk query params — e.g. an archive saved as ?__readwiseLocation= while
+  // the user is on the clean URL. Best-effort: a failure here just falls back
+  // to the original "no exact snapshot" answer.
+  return await checkWaybackPrefix(url).catch(() => null);
 }
 
 async function checkWaybackCdx(url) {
@@ -440,6 +455,66 @@ async function checkWaybackAvailable(url) {
     return {
       url: closest.url.replace(/^http:\/\//, "https://"),
       datetime: formatWaybackTimestamp(closest.timestamp),
+    };
+  } catch (err) {
+    clearTimer();
+    throw err;
+  }
+}
+
+async function checkWaybackPrefix(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  // A prefix sweep on a bare origin ("/") would scan the entire host for no
+  // real benefit, so require a meaningful path.
+  if (parsed.pathname.length <= 1) return null;
+
+  // Match every capture whose path starts here (the trailing slash is dropped
+  // so /foo, /foo/, and /foo/?x all match); the same-page filter below rejects
+  // the sibling paths and meaningful-param pages this broad match also returns.
+  const prefixBase = `${parsed.origin}${parsed.pathname.replace(/\/+$/, "")}`;
+  const target = stripTrackingParams(url);
+
+  const { signal, clearTimer } = makeAbortable();
+  try {
+    const params = new URLSearchParams({
+      url: prefixBase,
+      matchType: "prefix",
+      output: "json",
+      fl: "timestamp,original",
+      collapse: "urlkey",
+      limit: "50",
+    });
+    const resp = await fetch(`${CDX_API}?${params}`, { signal });
+    clearTimer();
+    if (resp.status === 408 || resp.status === 425 || resp.status === 429) {
+      throw new Error(`wayback prefix HTTP ${resp.status}`);
+    }
+    if (resp.status >= 400 && resp.status < 500) return null;
+    if (!resp.ok) throw new Error(`wayback prefix HTTP ${resp.status}`);
+
+    const data = await resp.json();
+    if (!Array.isArray(data) || data.length < 2) return null;
+
+    // Keep only captures that are the same page once junk params are stripped,
+    // then take the oldest. This rejects sibling paths (…-real-moat-2/) and
+    // genuinely different pages (?id=999) that the prefix match also returns.
+    let best = null;
+    for (const row of data.slice(1)) {
+      const [timestamp, original] = row;
+      if (!timestamp || !original) continue;
+      if (!urlsMatch(stripTrackingParams(original), target)) continue;
+      if (!best || timestamp < best.timestamp) best = { timestamp, original };
+    }
+    if (!best) return null;
+
+    return {
+      url: `https://web.archive.org/web/${best.timestamp}/${best.original}`,
+      datetime: formatWaybackTimestamp(best.timestamp),
     };
   } catch (err) {
     clearTimer();

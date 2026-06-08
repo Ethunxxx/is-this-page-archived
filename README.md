@@ -44,25 +44,38 @@ After you open a page (follow a link, enter a URL, or refresh), the service work
 | Service | Endpoint | Method |
 |---|---|---|
 | archive.today | `https://archive.today/timemap/<url>` with alias fallbacks | Memento TimeMap (RFC 7089) |
-| Wayback Machine | `https://web.archive.org/cdx/search/cdx?url=<url>&output=json&limit=1&fl=timestamp,original&sort=oldest`, with `https://archive.org/wayback/available?url=<url>` as an error fallback | CDX API, then availability API |
+| Wayback Machine | `https://web.archive.org/cdx/search/cdx?url=<url>&output=json&limit=1&fl=timestamp,original&sort=oldest`, with `https://archive.org/wayback/available?url=<url>` as an error fallback and a `matchType=prefix` sweep as a miss fallback | CDX API, then availability API |
 
 Both APIs return structured data with no anti-bot restrictions.
 
 If the exact URL is not archived and its query string only differs by known
-tracking parameters such as `utm_*`, `_gl`, `_ga`, `fbclid`, `gclid`,
-`gad_source`, or `source`, the service worker retries the lookup with those
+tracking or decoration parameters such as `utm_*`, `_gl`, `_ga`, `fbclid`,
+`gclid`, `gad_source`, `source`, or Readwise Reader's `__readwise*` (e.g.
+`__readwiseLocation`), the service worker retries the lookup with those
 parameters removed. This catches shared links whose archived copy exists under
 the clean canonical URL while leaving meaningful query parameters intact.
 Substack article links also fall back from email/share URLs under `/p/...` to
 their canonical article URL when parameters such as `publication_id`, `post_id`,
 `isFreemail`, `r`, or `triedRedirect` are present.
 
+The reverse can also happen: the page you're on is clean, but the only archived
+copy lives under a junk-decorated URL (e.g. someone archived it as
+`…/article/?__readwiseLocation=`). When the exact Wayback lookup misses, the
+service worker runs a `matchType=prefix` CDX sweep over the page's path and
+accepts any capture that is the **same page once tracking/decoration params are
+stripped** — so a clean URL still surfaces an archive saved under a decorated
+one. Sibling paths (`…/article-2/`) and meaningful-parameter pages (`?id=999`)
+that the prefix match also returns are rejected by that same-page check. This
+sweep only runs as a miss fallback, so archived pages keep their single exact
+lookup. archive.today has no equivalent JSON API, so this reverse fallback
+applies to Wayback only.
+
 ### Response validation
 
 Both services occasionally return a snapshot for a *different* URL than the one requested (typically the host root) when no exact match exists. The extension rejects these:
 
 - **archive.today**: the TimeMap's `rel="original"` URL must match the requested URL, the memento URL must live on a known archive.today host (`archive.ph`, `archive.today`, `archive.is`, `archive.md`), and the original URL embedded in the memento path must match.
-- **Wayback**: the `original` column returned by CDX must match the requested URL.
+- **Wayback**: the `original` column returned by CDX must match the requested URL. For the `matchType=prefix` miss fallback, the match is made after stripping tracking/decoration params from both sides, so only same-page captures are accepted.
 
 URL matching is done after normalization (see below) so trivial differences like a trailing slash don't cause false rejects.
 
