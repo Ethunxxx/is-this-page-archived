@@ -30,8 +30,8 @@ function isUserIgnored(url) {
 }
 
 const ARCHIVE_TODAY_TIMEMAP_HOSTS = [
-  "archive.today",
   "archive.ph",
+  "archive.today",
   "archive.is",
   "archive.md",
 ];
@@ -56,6 +56,7 @@ const INACTIVE_ICON_PATHS = {
 };
 const FETCH_TIMEOUT_MS = 10000;
 const ARCHIVE_TODAY_FETCH_TIMEOUT_MS = 5000;
+const ARCHIVE_TODAY_MEMENTO_PROBE_TIMEOUT_MS = 2500;
 const CACHE_TTL_MS = 60 * 60 * 1000;
 const TRACKING_QUERY_PARAMS = new Set([
   "_ga",
@@ -240,6 +241,61 @@ function isArchiveTodayHost(urlStr) {
   }
 }
 
+function addUrlCandidate(candidates, candidate) {
+  if (!candidates.includes(candidate)) candidates.push(candidate);
+}
+
+function archiveTodayMementoUrlCandidates(mementoUrl) {
+  try {
+    const parsed = new URL(mementoUrl);
+    if (!ARCHIVE_TODAY_HOSTS.has(parsed.hostname.toLowerCase())) return [mementoUrl];
+
+    const candidates = [];
+    for (const host of ARCHIVE_TODAY_TIMEMAP_HOSTS) {
+      const candidate = new URL(parsed.href);
+      candidate.protocol = "https:";
+      candidate.hostname = host;
+      addUrlCandidate(candidates, candidate.toString());
+    }
+    addUrlCandidate(candidates, mementoUrl);
+    return candidates;
+  } catch {
+    return [mementoUrl];
+  }
+}
+
+async function probeArchiveTodayMementoUrl(url, options) {
+  const { signal, clearTimer } = makeAbortable(ARCHIVE_TODAY_MEMENTO_PROBE_TIMEOUT_MS);
+  try {
+    const resp = await fetch(url, {
+      cache: "no-store",
+      redirect: "follow",
+      signal,
+      ...options,
+    });
+    clearTimer();
+    if (resp.body) await resp.body.cancel().catch(() => {});
+    return resp.ok;
+  } catch {
+    clearTimer();
+    return false;
+  }
+}
+
+async function isReachableArchiveTodayMementoUrl(url) {
+  return probeArchiveTodayMementoUrl(url, {
+    method: "GET",
+    headers: { Range: "bytes=0-0" },
+  });
+}
+
+async function firstReachableArchiveTodayMementoUrl(mementoUrl) {
+  for (const candidate of archiveTodayMementoUrlCandidates(mementoUrl)) {
+    if (await isReachableArchiveTodayMementoUrl(candidate)) return candidate;
+  }
+  return mementoUrl;
+}
+
 async function checkArchiveToday(url) {
   let lastError = null;
   let sawReachableHost = false;
@@ -307,7 +363,10 @@ async function fetchArchiveTodayTimemap(url, host) {
     const embedded = extractOriginalFromMementoUrl(firstMemento.url);
     if (embedded && !urlsMatch(embedded, url)) return null;
 
-    return firstMemento;
+    return {
+      ...firstMemento,
+      url: await firstReachableArchiveTodayMementoUrl(firstMemento.url),
+    };
   } catch (err) {
     clearTimer();
     throw err;
