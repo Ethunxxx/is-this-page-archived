@@ -387,6 +387,86 @@ async function fetchArchiveTodayTimemap(url, host) {
   }
 }
 
+// archive.today's /timemap/ is byte-exact, so it can't find a snapshot saved
+// under a trailing-slash or junk-param variant of the current URL (e.g. the
+// page is captured as ".../post/?__readwiseLocation=" but the user is on the
+// clean ".../post"). Its wildcard search ("https://host/<url>*") lists every
+// snapshot whose URL starts with the prefix and is the only endpoint that can
+// surface such variants. That endpoint is aggressively rate-limited, so this
+// runs on demand (popup open), never on the background per-navigation sweep.
+async function checkArchiveTodayPrefix(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  // A wildcard on a bare origin ("/") would scan the whole host for no benefit.
+  if (parsed.pathname.length <= 1) return null;
+
+  const prefixBase = `${parsed.origin}${parsed.pathname.replace(/\/+$/, "")}`;
+  const target = stripTrackingParams(url);
+
+  const discovered = await discoverArchiveTodayVariantUrl(prefixBase, target);
+  if (!discovered) return null;
+
+  // Resolve the discovered exact URL through the normal (un-throttled) timemap
+  // path: that re-verifies the snapshot and yields a reachable memento URL plus
+  // an ISO datetime, reusing all the host-fallback handling in checkArchiveToday.
+  return await checkArchiveToday(discovered).catch(() => null);
+}
+
+async function discoverArchiveTodayVariantUrl(prefixBase, target) {
+  // The hosts mirror one shared archive, so a single reachable host answers for
+  // all of them; only fall through to another mirror when one is rate-limited.
+  for (const host of ARCHIVE_TODAY_TIMEMAP_HOSTS) {
+    try {
+      return await fetchArchiveTodayWildcard(prefixBase, target, host);
+    } catch {
+      // 429 / transient on this mirror — try the next one.
+    }
+  }
+  return null;
+}
+
+async function fetchArchiveTodayWildcard(prefixBase, target, host) {
+  const { signal, clearTimer } = makeAbortable(ARCHIVE_TODAY_FETCH_TIMEOUT_MS);
+  try {
+    const resp = await fetch(`https://${host}/${encodeURI(prefixBase)}*`, { signal });
+    clearTimer();
+    if (resp.status === 408 || resp.status === 425 || resp.status === 429) {
+      throw new Error(`archive.today search HTTP ${resp.status}`);
+    }
+    if (resp.status >= 400 && resp.status < 500) return null;
+    if (!resp.ok) throw new Error(`archive.today search HTTP ${resp.status}`);
+
+    const html = await resp.text();
+    return oldestSamePageArchivedUrl(html, target);
+  } catch (err) {
+    clearTimer();
+    throw err;
+  }
+}
+
+function oldestSamePageArchivedUrl(html, target) {
+  // Each result row links the archived ORIGINAL url as
+  //   href="https://<archive-host>/<https://original-url>"
+  // Pull those out and keep the oldest whose same-page identity (junk query
+  // params stripped) matches the page we want. The capture must itself start
+  // with http(s), which rejects the page's chrome: the "/<host>/*" prefix
+  // example (carries a "*"), bare-host examples, and the favicon/thumb links.
+  const re = /href="https?:\/\/[a-z0-9.-]+\/(https?:\/\/[^"]+)"/gi;
+  let oldest = null;
+  for (const m of html.matchAll(re)) {
+    const original = m[1];
+    if (original.includes("*")) continue;
+    if (!urlsMatch(stripTrackingParams(original), target)) continue;
+    // Rows are listed newest→oldest, so the last match is the oldest snapshot.
+    oldest = original;
+  }
+  return oldest;
+}
+
 async function checkWayback(url) {
   const fallback = checkWaybackAvailable(url).catch(() => null);
   try {
@@ -905,7 +985,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   });
 });
 
-chrome.runtime.onMessage.addListener((msg) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg) return;
   // The popup calls "invalidate" after the user clicks a "Save to ..." link
   // so the next visit re-checks instead of hitting the cached "not archived".
@@ -923,8 +1003,64 @@ chrome.runtime.onMessage.addListener((msg) => {
   ) {
     if (msg.force) cacheDelete(msg.url);
     debouncedCheck(msg.url, msg.tabId);
+    return;
+  }
+  // The popup calls this when archive.today's exact lookup found nothing, to
+  // hunt for a snapshot saved under a trailing-slash/junk-param variant via the
+  // rate-limited wildcard search. Kept off the background sweep so normal
+  // browsing never hammers that endpoint. Async reply → return true.
+  if (
+    msg.type === "searchArchiveTodayVariants" &&
+    typeof msg.url === "string" &&
+    typeof msg.tabId === "number"
+  ) {
+    searchArchiveTodayVariants(msg.url, msg.tabId).then(
+      (memento) => sendResponse(memento ? { archiveToday: memento } : null),
+      () => sendResponse(null)
+    );
+    return true;
   }
 });
+
+async function searchArchiveTodayVariants(url, tabId) {
+  if (!isCheckableUrl(url) || isUserIgnored(url)) return null;
+  const memento = await checkArchiveTodayPrefix(url).catch(() => null);
+  // Await the merge so the in-memory cache write completes before the message
+  // handler resolves — otherwise the worker can go idle after sendResponse and
+  // drop the badge/cache update.
+  if (memento) await applyArchiveTodayVariant(tabId, url, memento);
+  return memento;
+}
+
+// Fold a variant snapshot into the cached + stored result so the badge flips to
+// "archived" and a reopened popup shows it without re-running the search.
+async function applyArchiveTodayVariant(tabId, url, memento) {
+  const stored = await getStoredTabResult(tabId).catch(() => null);
+  const base =
+    stored && storedResultApplies(stored, url)
+      ? stored
+      : cacheGet(url)?.value || { pageUrl: url, services: {} };
+  const merged = mergeArchiveTodayMemento(base, memento, url);
+  cacheSet(url, { value: merged, cachedAt: Date.now() });
+  silent(applyResultIfStillCurrent(tabId, url, merged));
+}
+
+function mergeArchiveTodayMemento(result, memento, url) {
+  const services = { ...(result.services || {}) };
+  services.archiveToday = "found";
+  if (!services.wayback) services.wayback = result.wayback ? "found" : "not_found";
+  const merged = {
+    ...result,
+    archived: true,
+    archiveToday: memento,
+    checking: false,
+    services,
+    pageUrl: url,
+  };
+  // We have a snapshot now, so this is no longer an all-services-failed result.
+  delete merged.error;
+  return merged;
+}
 
 function pruneCache() {
   if (cache.size > 500) {

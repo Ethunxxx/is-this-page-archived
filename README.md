@@ -43,10 +43,10 @@ After you open a page (follow a link, enter a URL, or refresh), the service work
 
 | Service | Endpoint | Method |
 |---|---|---|
-| archive.today | `https://archive.today/timemap/<url>` with alias fallbacks | Memento TimeMap (RFC 7089) |
+| archive.today | `https://archive.today/timemap/<url>` with alias fallbacks, plus an on-demand `https://archive.today/<url>*` wildcard search as a miss fallback | Memento TimeMap (RFC 7089), then HTML search |
 | Wayback Machine | `https://web.archive.org/cdx/search/cdx?url=<url>&output=json&limit=1&fl=timestamp,original&sort=oldest`, with `https://archive.org/wayback/available?url=<url>` as an error fallback and a `matchType=prefix` sweep as a miss fallback | CDX API, then availability API |
 
-Both APIs return structured data with no anti-bot restrictions.
+The two primary lookups (TimeMap and CDX) return structured data with no anti-bot restrictions. The archive.today wildcard search is the exception — it is rate-limited, so it runs only as an on-demand fallback (see below).
 
 If the exact URL is not archived and its query string only differs by known
 tracking or decoration parameters such as `utm_*`, `_gl`, `_ga`, `fbclid`,
@@ -67,14 +67,25 @@ stripped** — so a clean URL still surfaces an archive saved under a decorated
 one. Sibling paths (`…/article-2/`) and meaningful-parameter pages (`?id=999`)
 that the prefix match also returns are rejected by that same-page check. This
 sweep only runs as a miss fallback, so archived pages keep their single exact
-lookup. archive.today has no equivalent JSON API, so this reverse fallback
-applies to Wayback only.
+lookup.
+
+archive.today is exact-only too — its TimeMap won't return a snapshot stored
+under a different trailing slash or query string — and it has no JSON prefix
+API. Instead it exposes an HTML **wildcard search** (`https://archive.ph/<url>*`)
+that lists every snapshot whose URL starts with the page's path. When
+archive.today's exact TimeMap misses, the extension runs this search, keeps the
+oldest result that is the same page once tracking/decoration params are
+stripped, and resolves it back through the normal TimeMap to get a verified
+memento. Because that search endpoint is aggressively rate-limited (unlike the
+TimeMap and CDX APIs), it runs **only on demand, when you open the popup** —
+never on the background per-navigation check — so routine browsing never hits
+it.
 
 ### Response validation
 
 Both services occasionally return a snapshot for a *different* URL than the one requested (typically the host root) when no exact match exists. The extension rejects these:
 
-- **archive.today**: the TimeMap's `rel="original"` URL must match the requested URL, the memento URL must live on a known archive.today host (`archive.ph`, `archive.today`, `archive.is`, `archive.md`), and the original URL embedded in the memento path must match.
+- **archive.today**: the TimeMap's `rel="original"` URL must match the requested URL, the memento URL must live on a known archive.today host (`archive.ph`, `archive.today`, `archive.is`, `archive.md`), and the original URL embedded in the memento path must match. The wildcard-search miss fallback only accepts a listed result that is the same page after tracking/decoration params are stripped, then re-runs the TimeMap on that exact URL so these same checks apply to the snapshot it returns.
 - **Wayback**: the `original` column returned by CDX must match the requested URL. For the `matchType=prefix` miss fallback, the match is made after stripping tracking/decoration params from both sides, so only same-page captures are accepted.
 
 URL matching is done after normalization (see below) so trivial differences like a trailing slash don't cause false rejects.

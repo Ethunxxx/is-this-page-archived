@@ -182,10 +182,13 @@ function statusSummary(service, status) {
 }
 
 let activeCheck = null;
+let variantSearchActive = false;
 
 function performCheck(tab, { force }) {
   // Tear down any previous check so a Recheck click can't double-listen.
   if (activeCheck) activeCheck.cancel();
+  // A fresh check (including a Recheck) may warrant a new variant search.
+  variantSearchActive = false;
 
   const key = `tab_${tab.id}`;
   const me = Symbol("check");
@@ -206,8 +209,12 @@ function performCheck(tab, { force }) {
     }
     teardown();
     if (activeCheck && activeCheck.id === me) activeCheck = null;
-    if (result) renderResult(result);
-    else showState(stateError);
+    if (result) {
+      renderResult(result);
+      maybeSearchArchiveTodayVariants(tab, result);
+    } else {
+      showState(stateError);
+    }
   };
   const onChange = (changes, area) => {
     if (area !== "session") return;
@@ -258,6 +265,63 @@ function performCheck(tab, { force }) {
     if (storedResultApplies(stored)) finalize(stored);
     else startNetworkCheck();
   });
+}
+
+// archive.today's exact lookup can't see a snapshot saved under a trailing-
+// slash or junk-param variant of this URL. When it comes back empty, ask the
+// service worker to run archive.today's (rate-limited) wildcard search. Done on
+// popup open rather than the background sweep so normal browsing never triggers
+// it. Fires at most once per check; a Recheck re-arms it.
+function maybeSearchArchiveTodayVariants(tab, result) {
+  if (variantSearchActive || result.error) return;
+  const statuses = getServiceStatuses(result);
+  if (statuses.archiveToday !== "not_found" && statuses.archiveToday !== "error") {
+    return;
+  }
+  let parsed;
+  try {
+    parsed = new URL(tab.url);
+  } catch {
+    return;
+  }
+  // Nothing to find for a bare origin; don't spend a search on it.
+  if (parsed.pathname.length <= 1) return;
+
+  variantSearchActive = true;
+  // If Wayback already gave us an archived view, show a gentle "checking" row
+  // for archive.today while the slower search runs. If nothing was found at
+  // all, search silently so we don't flash the full loading state.
+  if (result.archived) renderResult(withArchiveTodayChecking(result));
+
+  const revert = () => {
+    if (result.archived) renderResult(result);
+  };
+  chrome.runtime
+    .sendMessage({ type: "searchArchiveTodayVariants", tabId: tab.id, url: tab.url })
+    .then((resp) => {
+      if (resp && resp.archiveToday) {
+        renderResult(mergeArchiveTodayIntoResult(result, resp.archiveToday));
+      } else {
+        revert();
+      }
+    })
+    .catch(revert);
+}
+
+function withArchiveTodayChecking(result) {
+  return {
+    ...result,
+    services: { ...getServiceStatuses(result), archiveToday: "checking" },
+  };
+}
+
+function mergeArchiveTodayIntoResult(result, memento) {
+  return {
+    ...result,
+    archived: true,
+    archiveToday: memento,
+    services: { ...getServiceStatuses(result), archiveToday: "found" },
+  };
 }
 
 function wireRecheck(tab) {
