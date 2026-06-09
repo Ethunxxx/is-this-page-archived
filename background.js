@@ -323,8 +323,14 @@ async function checkArchiveToday(url) {
 async function fetchArchiveTodayTimemap(url, host) {
   const { signal, clearTimer } = makeAbortable(ARCHIVE_TODAY_FETCH_TIMEOUT_MS);
   try {
+    // The target URL is appended raw after /timemap/, and archive.today matches
+    // on its real structure — the query delimiters in particular must stay
+    // literal. encodeURIComponent escapes "?"->"%3F" and "="->"%3D", so a URL
+    // like ".../?__readwiseLocation=" is seen as a path with no query, matches
+    // no memento, and 404s. encodeURI preserves "?", "=", "&", "/" and ":"
+    // while still escaping genuinely unsafe characters (spaces, etc.).
     const resp = await fetch(
-      `https://${host}/timemap/${encodeURIComponent(url)}`,
+      `https://${host}/timemap/${encodeURI(url)}`,
       { signal }
     );
     clearTimer();
