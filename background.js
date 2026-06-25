@@ -41,6 +41,7 @@ const BADGE_COLOR = "#274C77";
 const BADGE_NOT_ARCHIVED_COLOR = "#6096BA";
 const BADGE_CHECKING_COLOR = "#8B8C89";
 const BADGE_ERROR_COLOR = "#C1121F";
+const BADGE_UNAVAILABLE_COLOR = "#E08A1E";
 const BADGE_TEXT_COLOR = "#FFFFFF";
 const ACTIVE_ICON_PATHS = {
   16: "icons/icon-16.png",
@@ -58,6 +59,8 @@ const FETCH_TIMEOUT_MS = 10000;
 const ARCHIVE_TODAY_FETCH_TIMEOUT_MS = 5000;
 const ARCHIVE_TODAY_MEMENTO_PROBE_TIMEOUT_MS = 2500;
 const CACHE_TTL_MS = 60 * 60 * 1000;
+const TRANSIENT_RETRY_BASE_MS = 900;
+const TRANSIENT_RETRY_JITTER_MS = 600;
 const TRACKING_QUERY_PARAMS = new Set([
   "_ga",
   "_gl",
@@ -93,6 +96,67 @@ const inflight = new Map();
 
 function silent(promise) {
   if (promise && typeof promise.catch === "function") promise.catch(() => {});
+}
+
+// Tag an error as transient (HTTP 429/408/425, 5xx, or a timeout) so callers can
+// tell "the service is busy, try again" apart from a hard, non-recoverable failure.
+function transientError(message) {
+  return Object.assign(new Error(message), { transient: true });
+}
+
+// A fetch aborted by our own timeout surfaces as an AbortError; treat that as
+// transient (the service was too slow) rather than a hard error.
+function asTransient(err, signal, label) {
+  if (err?.transient) return err;
+  if (signal?.aborted || err?.name === "AbortError") {
+    return transientError(`${label} timed out`);
+  }
+  return err;
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isFailureStatus(status) {
+  return status === "error" || status === "rate_limited";
+}
+
+// When no snapshot was found, a definitive "Not Archived" requires BOTH services
+// to have actually answered. If either was rate-limited, errored, or timed out,
+// the result is inconclusive — surface that (any transient failure → "busy, try
+// again"; otherwise a hard error) instead of pretending we know it isn't archived.
+function applyFailureFlag(result, services) {
+  if (result.archived) return;
+  const statuses = [services.archiveToday, services.wayback];
+  if (statuses.includes("checking")) return; // still in flight — too early to judge
+  if (!statuses.some(isFailureStatus)) return; // both answered, no snapshot → genuinely not archived
+  if (statuses.includes("rate_limited")) {
+    result.unavailable = true;
+  } else {
+    result.error = true;
+  }
+}
+
+// Both services are non-functional (errored or rate-limited): no point trying
+// more URL candidates, and the popup should settle on an inconclusive verdict.
+function bothServicesFailed(services) {
+  return isFailureStatus(services.archiveToday) && isFailureStatus(services.wayback);
+}
+
+// Retry a check exactly once, and only when it failed transiently. Reserved for
+// the fast-failing endpoints (archive.today's timemap, Wayback's "available"
+// fallback); never the slow CDX call, where a second 10s wait would blow the
+// popup's time budget. The short jittered backoff avoids instantly re-hitting a
+// host that just rate-limited us, and keeps concurrent tabs from syncing up.
+async function withTransientRetry(fn) {
+  try {
+    return await fn();
+  } catch (err) {
+    if (!err?.transient) throw err;
+    await wait(TRANSIENT_RETRY_BASE_MS + Math.floor(Math.random() * TRANSIENT_RETRY_JITTER_MS));
+    return await fn();
+  }
 }
 
 function cacheKey(url) {
@@ -214,6 +278,15 @@ function stripSubstackDecorationParams(url) {
   });
 }
 
+// The "same-page" identity of a URL: drop both generic tracking params and
+// Substack's article-decoration params, so a decorated URL and its clean form
+// resolve to the same key. Used both to build the clean lookup candidate and to
+// decide whether an archived snapshot saved under some param-variant is really
+// the page we're asking about.
+function samePageKey(url) {
+  return stripSubstackDecorationParams(stripTrackingParams(url));
+}
+
 function addLookupCandidate(candidates, candidate) {
   if (!candidates.some((existing) => normalizeUrl(existing) === normalizeUrl(candidate))) {
     candidates.push(candidate);
@@ -222,9 +295,8 @@ function addLookupCandidate(candidates, candidate) {
 
 function lookupCandidates(url) {
   const candidates = [url];
-  const stripped = stripTrackingParams(url);
-  addLookupCandidate(candidates, stripped);
-  addLookupCandidate(candidates, stripSubstackDecorationParams(stripped));
+  addLookupCandidate(candidates, stripTrackingParams(url));
+  addLookupCandidate(candidates, samePageKey(url));
   return candidates;
 }
 
@@ -306,18 +378,23 @@ async function firstReachableArchiveTodayMementoUrl(mementoUrl) {
 
 async function checkArchiveToday(url) {
   let lastError = null;
-  let sawReachableHost = false;
   for (const host of ARCHIVE_TODAY_TIMEMAP_HOSTS) {
     try {
-      const result = await fetchArchiveTodayTimemap(url, host);
-      sawReachableHost = true;
-      if (result) return result;
+      // A reachable mirror is authoritative — the hosts share one archive — so
+      // its answer (a snapshot or a definitive "none") ends the search. Polling
+      // the remaining mirrors would only add load for no new information.
+      return await fetchArchiveTodayTimemap(url, host);
     } catch (err) {
       lastError = err;
+      // A rate-limit/timeout almost certainly applies to every mirror (shared
+      // infrastructure, IP-based throttling), so cascading through the other
+      // three just amplifies the load that got us throttled. Stop and report it.
+      if (err?.transient) break;
+      // A hard/connection error means only this mirror is unreachable; another
+      // may still answer, so fall through and try the next one.
     }
   }
-  if (sawReachableHost) return null;
-  throw lastError || new Error("archive.today unavailable");
+  throw lastError || transientError("archive.today unavailable");
 }
 
 async function fetchArchiveTodayTimemap(url, host) {
@@ -337,10 +414,10 @@ async function fetchArchiveTodayTimemap(url, host) {
     // 408/425/429: rate-limit / try-again — transient. 5xx: transient.
     // Other 4xx: treat as "no snapshot" (cacheable).
     if (resp.status === 408 || resp.status === 425 || resp.status === 429) {
-      throw new Error(`archive.today HTTP ${resp.status}`);
+      throw transientError(`archive.today HTTP ${resp.status}`);
     }
     if (resp.status >= 400 && resp.status < 500) return null;
-    if (!resp.ok) throw new Error(`archive.today HTTP ${resp.status}`);
+    if (!resp.ok) throw transientError(`archive.today HTTP ${resp.status}`);
 
     const text = await resp.text();
 
@@ -383,7 +460,7 @@ async function fetchArchiveTodayTimemap(url, host) {
     };
   } catch (err) {
     clearTimer();
-    throw err;
+    throw asTransient(err, signal, "archive.today");
   }
 }
 
@@ -405,7 +482,7 @@ async function checkArchiveTodayPrefix(url) {
   if (parsed.pathname.length <= 1) return null;
 
   const prefixBase = `${parsed.origin}${parsed.pathname.replace(/\/+$/, "")}`;
-  const target = stripTrackingParams(url);
+  const target = samePageKey(url);
 
   const discovered = await discoverArchiveTodayVariantUrl(prefixBase, target);
   if (!discovered) return null;
@@ -435,16 +512,16 @@ async function fetchArchiveTodayWildcard(prefixBase, target, host) {
     const resp = await fetch(`https://${host}/${encodeURI(prefixBase)}*`, { signal });
     clearTimer();
     if (resp.status === 408 || resp.status === 425 || resp.status === 429) {
-      throw new Error(`archive.today search HTTP ${resp.status}`);
+      throw transientError(`archive.today search HTTP ${resp.status}`);
     }
     if (resp.status >= 400 && resp.status < 500) return null;
-    if (!resp.ok) throw new Error(`archive.today search HTTP ${resp.status}`);
+    if (!resp.ok) throw transientError(`archive.today search HTTP ${resp.status}`);
 
     const html = await resp.text();
     return oldestSamePageArchivedUrl(html, target);
   } catch (err) {
     clearTimer();
-    throw err;
+    throw asTransient(err, signal, "archive.today search");
   }
 }
 
@@ -460,7 +537,7 @@ function oldestSamePageArchivedUrl(html, target) {
   for (const m of html.matchAll(re)) {
     const original = m[1];
     if (original.includes("*")) continue;
-    if (!urlsMatch(stripTrackingParams(original), target)) continue;
+    if (!urlsMatch(samePageKey(original), target)) continue;
     // Rows are listed newest→oldest, so the last match is the oldest snapshot.
     oldest = original;
   }
@@ -468,7 +545,9 @@ function oldestSamePageArchivedUrl(html, target) {
 }
 
 async function checkWayback(url) {
-  const fallback = checkWaybackAvailable(url).catch(() => null);
+  // The CDX call is the slow, authoritative path; the lightweight "available"
+  // API is the fast fallback, so it's the one we retry on a transient blip.
+  const fallback = withTransientRetry(() => checkWaybackAvailable(url)).catch(() => null);
   try {
     const exact = await checkWaybackCdx(url);
     if (exact) return exact;
@@ -498,10 +577,10 @@ async function checkWaybackCdx(url) {
     const resp = await fetch(`${CDX_API}?${params}`, { signal });
     clearTimer();
     if (resp.status === 408 || resp.status === 425 || resp.status === 429) {
-      throw new Error(`wayback HTTP ${resp.status}`);
+      throw transientError(`wayback HTTP ${resp.status}`);
     }
     if (resp.status >= 400 && resp.status < 500) return null;
-    if (!resp.ok) throw new Error(`wayback HTTP ${resp.status}`);
+    if (!resp.ok) throw transientError(`wayback HTTP ${resp.status}`);
 
     const data = await resp.json();
     if (!Array.isArray(data) || data.length < 2) return null;
@@ -515,7 +594,7 @@ async function checkWaybackCdx(url) {
     };
   } catch (err) {
     clearTimer();
-    throw err;
+    throw asTransient(err, signal, "wayback");
   }
 }
 
@@ -526,10 +605,10 @@ async function checkWaybackAvailable(url) {
     const resp = await fetch(`${WAYBACK_AVAILABLE_API}?${params}`, { signal });
     clearTimer();
     if (resp.status === 408 || resp.status === 425 || resp.status === 429) {
-      throw new Error(`wayback availability HTTP ${resp.status}`);
+      throw transientError(`wayback availability HTTP ${resp.status}`);
     }
     if (resp.status >= 400 && resp.status < 500) return null;
-    if (!resp.ok) throw new Error(`wayback availability HTTP ${resp.status}`);
+    if (!resp.ok) throw transientError(`wayback availability HTTP ${resp.status}`);
 
     const data = await resp.json();
     const closest = data?.archived_snapshots?.closest;
@@ -544,7 +623,7 @@ async function checkWaybackAvailable(url) {
     };
   } catch (err) {
     clearTimer();
-    throw err;
+    throw asTransient(err, signal, "wayback availability");
   }
 }
 
@@ -563,7 +642,7 @@ async function checkWaybackPrefix(url) {
   // so /foo, /foo/, and /foo/?x all match); the same-page filter below rejects
   // the sibling paths and meaningful-param pages this broad match also returns.
   const prefixBase = `${parsed.origin}${parsed.pathname.replace(/\/+$/, "")}`;
-  const target = stripTrackingParams(url);
+  const target = samePageKey(url);
 
   const { signal, clearTimer } = makeAbortable();
   try {
@@ -578,10 +657,10 @@ async function checkWaybackPrefix(url) {
     const resp = await fetch(`${CDX_API}?${params}`, { signal });
     clearTimer();
     if (resp.status === 408 || resp.status === 425 || resp.status === 429) {
-      throw new Error(`wayback prefix HTTP ${resp.status}`);
+      throw transientError(`wayback prefix HTTP ${resp.status}`);
     }
     if (resp.status >= 400 && resp.status < 500) return null;
-    if (!resp.ok) throw new Error(`wayback prefix HTTP ${resp.status}`);
+    if (!resp.ok) throw transientError(`wayback prefix HTTP ${resp.status}`);
 
     const data = await resp.json();
     if (!Array.isArray(data) || data.length < 2) return null;
@@ -593,7 +672,7 @@ async function checkWaybackPrefix(url) {
     for (const row of data.slice(1)) {
       const [timestamp, original] = row;
       if (!timestamp || !original) continue;
-      if (!urlsMatch(stripTrackingParams(original), target)) continue;
+      if (!urlsMatch(samePageKey(original), target)) continue;
       if (!best || timestamp < best.timestamp) best = { timestamp, original };
     }
     if (!best) return null;
@@ -604,7 +683,7 @@ async function checkWaybackPrefix(url) {
     };
   } catch (err) {
     clearTimer();
-    throw err;
+    throw asTransient(err, signal, "wayback prefix");
   }
 }
 
@@ -683,27 +762,38 @@ function startInflightCheck(url, key) {
 
 async function fetchBoth(url, onProgress = () => {}) {
   const candidates = lookupCandidates(url);
+  // archive.today uses a byte-exact timemap, so it only pays to query the URLs a
+  // snapshot is plausibly stored under: the page exactly as-is, and its clean
+  // canonical form (snapshots are usually saved without tracking/decoration
+  // params). Intermediate partly-stripped variants almost never match, so we
+  // don't spend requests on a rate-limited host for them — the popup's on-demand
+  // wildcard search is the deeper fallback for genuinely unpredictable variants.
+  const archiveTodayCandidates = new Set([normalizeUrl(url), normalizeUrl(samePageKey(url))]);
   let cacheable = true;
   let result = null;
 
   for (let i = 0; i < candidates.length; i++) {
     const candidate = candidates[i];
     const isLastCandidate = i === candidates.length - 1;
+    // Query archive.today only for the page-identity candidates above, and only
+    // until one yields a snapshot; Wayback still runs for every candidate.
+    const skipArchiveToday =
+      Boolean(result?.archiveToday) || !archiveTodayCandidates.has(normalizeUrl(candidate));
     const checked = await fetchCandidate(candidate, (candidateResult) => {
       // Progress from a later URL candidate should preserve snapshots already
       // found on earlier candidates. If more fallbacks remain, keep missing
       // services pending so the popup does not finalize too early.
       const mergedProgress = mergeCandidateResults(result, candidateResult);
       const progressResult =
-        !isLastCandidate && !hasAllSnapshots(mergedProgress) && !mergedProgress.error
+        !isLastCandidate && !hasAllSnapshots(mergedProgress) && !bothServicesFailed(mergedProgress.services)
           ? withPendingFallbackServices(mergedProgress)
           : mergedProgress;
       const progress = withPageMetadata(progressResult, url);
       onProgress(progress);
-    });
+    }, { skipArchiveToday });
     cacheable = cacheable && checked.cacheable;
     result = mergeCandidateResults(result, checked);
-    if (hasAllSnapshots(result) || checked.error) break;
+    if (hasAllSnapshots(result) || bothServicesFailed(result.services)) break;
   }
 
   result = withPageMetadata(result, url);
@@ -722,17 +812,27 @@ function withPendingFallbackServices(result) {
   const services = { ...result.services };
   if (!result.archiveToday) services.archiveToday = "checking";
   if (!result.wayback) services.wayback = "checking";
-  return {
+  const pending = {
     ...result,
     checking: true,
     services,
   };
+  // We've reset the unfinished services to "checking" for the next candidate,
+  // so any "both failed" verdict reached so far no longer holds.
+  delete pending.error;
+  delete pending.unavailable;
+  return pending;
 }
 
 function mergeServiceStatus(previous, next, value) {
   if (value) return "found";
+  // "skipped" means a candidate didn't run this service (tracking-param variants
+  // skip archive.today); it must never override the other candidate's real answer.
+  if (previous === "skipped") return next;
+  if (next === "skipped") return previous;
   if (previous === "found" || next === "found") return "found";
   if (previous === "checking" || next === "checking") return "checking";
+  if (previous === "rate_limited" || next === "rate_limited") return "rate_limited";
   if (previous === "error" || next === "error") return "error";
   return "not_found";
 }
@@ -764,27 +864,34 @@ function mergeCandidateResults(previous, next) {
     services,
   };
 
-  if (services.archiveToday === "error" && services.wayback === "error") {
-    merged.error = true;
-  }
+  applyFailureFlag(merged, services);
 
   return merged;
 }
 
-async function fetchCandidate(url, onProgress) {
+async function fetchCandidate(url, onProgress, { skipArchiveToday = false } = {}) {
   const state = {
     archiveToday: null,
     wayback: null,
     services: {
-      archiveToday: "checking",
+      // archiveToday may be skipped for this candidate (see fetchBoth's
+      // candidate selection). "skipped" defers to whatever a checked candidate
+      // reports, so it never overrides another candidate's real answer.
+      archiveToday: skipArchiveToday ? "skipped" : "checking",
       wayback: "checking",
     },
   };
 
   const publish = () => onProgress(candidateResult(state));
-  const archiveToday = settleService("archiveToday", checkArchiveToday(url), state, publish);
-  const wayback = settleService("wayback", checkWayback(url), state, publish);
-  await Promise.all([archiveToday, wayback]);
+  const tasks = [settleService("wayback", checkWayback(url), state, publish)];
+  if (skipArchiveToday) {
+    publish();
+  } else {
+    tasks.push(
+      settleService("archiveToday", withTransientRetry(() => checkArchiveToday(url)), state, publish)
+    );
+  }
+  await Promise.all(tasks);
 
   return candidateResult(state);
 }
@@ -794,8 +901,10 @@ async function settleService(service, promise, state, publish) {
     const value = await promise;
     state[service] = value;
     state.services[service] = value ? "found" : "not_found";
-  } catch {
-    state.services[service] = "error";
+  } catch (err) {
+    // "rate_limited" is a transient failure (busy / slow / 429) the user can
+    // retry; "error" is a hard failure. The popup surfaces them differently.
+    state.services[service] = err?.transient ? "rate_limited" : "error";
   } finally {
     publish();
   }
@@ -804,7 +913,7 @@ async function settleService(service, promise, state, publish) {
 function candidateResult(state) {
   const archived = !!(state.archiveToday || state.wayback);
   const checking = Object.values(state.services).includes("checking");
-  const cacheable = !Object.values(state.services).includes("error");
+  const cacheable = !Object.values(state.services).some(isFailureStatus);
   const result = {
     archived,
     archiveToday: state.archiveToday,
@@ -814,14 +923,7 @@ function candidateResult(state) {
     services: { ...state.services },
   };
 
-  // If both upstream checks errored, surface that to the popup instead of
-  // pretending we know there's no archive.
-  if (
-    state.services.archiveToday === "error" &&
-    state.services.wayback === "error"
-  ) {
-    result.error = true;
-  }
+  applyFailureFlag(result, state.services);
 
   return result;
 }
@@ -837,6 +939,7 @@ function withPageMetadata(result, pageUrl) {
     pageUrl,
     checkedAt: Date.now(),
     ...(result.error ? { error: true } : {}),
+    ...(result.unavailable ? { unavailable: true } : {}),
   };
 }
 
@@ -856,6 +959,8 @@ function applyResult(tabId, result) {
     setBadge(tabId, "✓", BADGE_COLOR);
   } else if (result && result.checking) {
     setBadge(tabId, "?", BADGE_CHECKING_COLOR);
+  } else if (result && result.unavailable) {
+    setBadge(tabId, "!", BADGE_UNAVAILABLE_COLOR);
   } else if (result && result.error) {
     setBadge(tabId, "✕", BADGE_ERROR_COLOR);
   } else if (result) {
@@ -1059,6 +1164,7 @@ function mergeArchiveTodayMemento(result, memento, url) {
   };
   // We have a snapshot now, so this is no longer an all-services-failed result.
   delete merged.error;
+  delete merged.unavailable;
   return merged;
 }
 

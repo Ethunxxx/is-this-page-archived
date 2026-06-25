@@ -71,8 +71,13 @@ lookup.
 
 archive.today is exact-only too — its TimeMap won't return a snapshot stored
 under a different trailing slash or query string — and it has no JSON prefix
-API. Instead it exposes an HTML **wildcard search** (`https://archive.ph/<url>*`)
-that lists every snapshot whose URL starts with the page's path. When
+API. So the background check runs the exact TimeMap against **both the page
+as-is and its clean canonical URL** (the same tracking/decoration-stripped form
+Wayback falls back to), stopping at the first snapshot — this catches the common
+case of a decorated link whose archived copy lives under the clean URL. For less
+predictable variants, archive.today also exposes an HTML **wildcard search**
+(`https://archive.ph/<url>*`) that lists every snapshot whose URL starts with the
+page's path. When
 archive.today's exact TimeMap misses, the extension runs this search, keeps the
 oldest result that is the same page once tracking/decoration params are
 stripped, and resolves it back through the normal TimeMap to get a verified
@@ -98,9 +103,10 @@ The badge and icon are set per-tab via `chrome.action`:
 |---|---|
 | Checking | Normal icon, Grey `?` while no source has found a snapshot yet and at least one request is still running |
 | Archived (either source) | Normal icon, Dusk Blue `✓` as soon as either source finds a valid snapshot |
-| Not archived | Normal icon, Steel Blue `✕` |
+| Not archived | Normal icon, Steel Blue `✕` — both services answered and neither had a snapshot |
 | Non-checkable URL (non-HTTP(S), private/local, archive service, or excluded host — built-in or user-ignored) | Grey icon, no badge |
-| Error | Normal icon, Red `✕` |
+| Services busy | Normal icon, Amber `!` when no snapshot was found and at least one service was rate-limiting or too slow (result is inconclusive) — transient, retry later |
+| Error | Normal icon, Red `✕` when no snapshot was found and a service hard-failed (non-transient) with neither rate-limited |
 
 ### Popup states
 
@@ -108,8 +114,9 @@ The badge and icon are set per-tab via `chrome.action`:
 |---|---|
 | Checking | Fetches are in flight and no snapshot has been found yet; if one service already missed, the popup says which one is still checking |
 | Archived | At least one service returned a valid snapshot; if the other service is still running, the popup shows that too |
-| Not Archived | Both services succeeded and neither had a snapshot — also shows "Save to…" links |
-| Check Failed | Both upstream calls errored, or the popup timed out after 15s |
+| Not Archived | Both services answered and neither had a snapshot — also shows "Save to…" links |
+| Services Busy | No snapshot found and at least one service was rate-limited or too slow (so the result is inconclusive), or the popup timed out after 18s. Reports what each service said (e.g. "archive.today is busy (rate-limited). Wayback Machine did not find a snapshot."); recoverable, with a **Recheck** button |
+| Check Failed | No snapshot found and a service hard-failed (non-transient) with neither rate-limited — also reports per-service status |
 | No Page to Check | The active tab isn't an HTTP(S) URL, is on a private/local host, is already on an archive service, or is on a built-in excluded host |
 | Checks Disabled | The user has ignored this site; shows which rule applies and a **Re-enable on this site** link |
 
@@ -145,7 +152,10 @@ lookup failed.
 
 ### Robustness
 
-- **Fetch timeout**: Wayback calls are aborted after 10s; archive.today aliases are tried with shorter per-alias timeouts; the popup gives up after 15s and shows the error state.
+- **Fetch timeout**: Wayback calls are aborted after 10s; archive.today aliases are tried with shorter per-alias timeouts; the popup gives up after 18s and shows the recoverable **Services Busy** state.
+- **Transient-failure handling**: HTTP 429/408/425, 5xx, and timeouts are treated as transient ("busy") rather than hard errors, and retried once with a short jittered backoff on the fast endpoints (archive.today timemap, Wayback availability) — never the slow CDX call.
+- **No overconfident "Not Archived"**: a definitive "Not Archived" requires *both* services to actually answer. If no snapshot is found and either service was rate-limited or too slow, the popup shows the recoverable **Services Busy** state instead; **Check Failed** is reserved for a hard, non-transient failure with nothing rate-limited. Both inconclusive cards name what each service reported.
+- **archive.today load**: a reachable mirror is authoritative, so its answer (snapshot or definitive "none") ends the search instead of polling all four aliases; a rate-limit stops the cascade rather than fanning out across mirrors; and archive.today's exact TimeMap runs for the page as-is and its clean canonical URL (intermediate partial variants go to Wayback only), with the on-demand wildcard search covering genuinely unpredictable variants when the popup opens.
 - **Debouncing**: tab updates are debounced 300ms so a redirect chain only triggers one check.
 - **Tab-navigation race protection**: if the tab navigates away while a fetch is in flight, the result is dropped instead of painted onto the new page.
 - **Tab activation**: switching to a tab triggers a check (served from cache if fresh).

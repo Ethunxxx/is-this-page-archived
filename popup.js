@@ -14,6 +14,7 @@ const stateArchived = document.getElementById("state-archived");
 const stateNotArchived = document.getElementById("state-not-archived");
 const stateNa = document.getElementById("state-na");
 const stateError = document.getElementById("state-error");
+const stateUnavailable = document.getElementById("state-unavailable");
 const stateIgnored = document.getElementById("state-ignored");
 const resultsList = document.getElementById("results-list");
 const ignoredMessage = document.getElementById("ignored-message");
@@ -30,9 +31,14 @@ const btnExcludeDomain = document.getElementById("btn-exclude-domain");
 const btnExcludeCancel = document.getElementById("btn-exclude-cancel");
 const loadingMessage = stateLoading.querySelector(".message");
 const archivedSubtitle = stateArchived.querySelector(".subtitle");
+const unavailableMessage = stateUnavailable.querySelector(".message");
+const errorMessage = stateError.querySelector(".message");
 const DEFAULT_LOADING_MESSAGE = "Checking archives...";
 const DEFAULT_ARCHIVED_SUBTITLE = "Oldest snapshots found";
-const POPUP_CHECK_TIMEOUT_MS = 15000;
+const DEFAULT_UNAVAILABLE_MESSAGE =
+  "The archive services are rate-limiting or responding slowly right now. Try again in a moment.";
+const DEFAULT_ERROR_MESSAGE = "Could not reach the archive services.";
+const POPUP_CHECK_TIMEOUT_MS = 18000;
 const SERVICE_NAMES = {
   archiveToday: "archive.today",
   wayback: "Wayback Machine",
@@ -45,6 +51,7 @@ function showState(el) {
     stateNotArchived,
     stateNa,
     stateError,
+    stateUnavailable,
     stateIgnored,
   ].forEach((s) => s.classList.add("hidden"));
   el.classList.remove("hidden");
@@ -177,8 +184,33 @@ function statusSummary(service, status) {
   const name = serviceName(service);
   if (status === "found") return `${name} found a snapshot`;
   if (status === "not_found") return `${name} did not find a snapshot`;
+  if (status === "rate_limited") return `${name} is busy (rate-limited)`;
   if (status === "error") return `${name} could not be reached`;
   return `${name} is still checking`;
+}
+
+// Build a per-service sentence like "archive.today is busy (rate-limited).
+// Wayback Machine did not find a snapshot." so the inconclusive cards report what
+// each service actually said instead of a flat, overconfident verdict.
+function serviceDetailMessage(result) {
+  const statuses = result && getServiceStatuses(result);
+  if (!statuses) return "";
+  return ["archiveToday", "wayback"]
+    .filter((service) => statuses[service] && statuses[service] !== "skipped")
+    .map((service) => statusSummary(service, statuses[service]))
+    .join(". ");
+}
+
+function renderUnavailable(result) {
+  const detail = serviceDetailMessage(result);
+  unavailableMessage.textContent = detail ? `${detail}. Try again in a moment.` : DEFAULT_UNAVAILABLE_MESSAGE;
+  showState(stateUnavailable);
+}
+
+function renderError(result) {
+  const detail = serviceDetailMessage(result);
+  errorMessage.textContent = detail ? `${detail}.` : DEFAULT_ERROR_MESSAGE;
+  showState(stateError);
 }
 
 let activeCheck = null;
@@ -200,7 +232,7 @@ function performCheck(tab, { force }) {
     chrome.storage.onChanged.removeListener(onChange);
     if (timeoutId) clearTimeout(timeoutId);
   };
-  const finalize = (result) => {
+  const finalize = (result, { timedOut = false } = {}) => {
     if (resolved) return;
     // Intermediate writes keep the popup open so final results can still land.
     if (result?.checking) {
@@ -212,6 +244,10 @@ function performCheck(tab, { force }) {
     if (result) {
       renderResult(result);
       maybeSearchArchiveTodayVariants(tab, result);
+    } else if (timedOut) {
+      // Nothing landed in time — almost always the services being slow, not a
+      // broken extension. Show the recoverable "busy" state, not a hard error.
+      renderUnavailable(null);
     } else {
       showState(stateError);
     }
@@ -246,7 +282,7 @@ function performCheck(tab, { force }) {
     chrome.runtime
       .sendMessage({ type: "check", tabId: tab.id, url: tab.url, force: !!force })
       .catch(() => {});
-    timeoutId = setTimeout(() => finalize(null), POPUP_CHECK_TIMEOUT_MS);
+    timeoutId = setTimeout(() => finalize(null, { timedOut: true }), POPUP_CHECK_TIMEOUT_MS);
   };
 
   if (force) {
@@ -273,11 +309,13 @@ function performCheck(tab, { force }) {
 // popup open rather than the background sweep so normal browsing never triggers
 // it. Fires at most once per check; a Recheck re-arms it.
 function maybeSearchArchiveTodayVariants(tab, result) {
-  if (variantSearchActive || result.error) return;
+  if (variantSearchActive) return;
   const statuses = getServiceStatuses(result);
-  if (statuses.archiveToday !== "not_found" && statuses.archiveToday !== "error") {
-    return;
-  }
+  // Only worth searching when archive.today itself was reachable but had no exact
+  // match — that's when a param-variant snapshot might still exist. Skip when it
+  // errored or was rate-limited (the heavier wildcard search would just fail too).
+  // The other service's state is irrelevant to this archive.today-only search.
+  if (statuses.archiveToday !== "not_found") return;
   let parsed;
   try {
     parsed = new URL(tab.url);
@@ -491,8 +529,12 @@ function renderResult(result) {
     renderArchivedResult(result);
     return;
   }
+  if (result.unavailable) {
+    renderUnavailable(result);
+    return;
+  }
   if (result.error) {
-    showState(stateError);
+    renderError(result);
     return;
   }
   if (result.checking) {
