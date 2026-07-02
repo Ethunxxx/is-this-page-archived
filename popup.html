@@ -173,28 +173,32 @@
       color: var(--dusk-blue);
     }
 
-    .loading {
-      display: flex;
+    .row-spinner {
+      flex-shrink: 0;
+      width: 14px;
+      height: 14px;
+      border: 2px solid var(--icy-blue);
+      border-top-color: var(--steel-blue);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .row-status-icon {
+      flex-shrink: 0;
+      display: inline-flex;
       align-items: center;
       justify-content: center;
-      gap: 6px;
-      padding: 32px 0;
+      color: var(--grey-olive);
     }
 
-    .loading .dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: var(--steel-blue);
-      animation: pulse 1.2s ease-in-out infinite;
-    }
-
-    .loading .dot:nth-child(2) { animation-delay: 0.15s; }
-    .loading .dot:nth-child(3) { animation-delay: 0.3s; }
-
-    @keyframes pulse {
-      0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
-      40% { opacity: 1; transform: scale(1); }
+    .row-status-icon svg {
+      width: 16px;
+      height: 16px;
+      display: block;
     }
 
     .control-card {
@@ -343,18 +347,8 @@
 </head>
 <body>
   <div class="container">
-    <!-- Loading State -->
-    <div id="state-loading" class="card">
-      <div class="loading">
-        <div class="dot"></div>
-        <div class="dot"></div>
-        <div class="dot"></div>
-      </div>
-      <div class="message">Checking archives&hellip;</div>
-    </div>
-
-    <!-- Archived State -->
-    <div id="state-archived" class="card hidden">
+    <!-- Unified Results State -->
+    <div id="state-results" class="card">
       <button
         type="button"
         class="btn-recheck"
@@ -368,30 +362,10 @@
           <path d="M16 16h5v5"/>
         </svg>
       </button>
-      <div class="status-icon">&#10003;</div>
-      <div class="title">Archived</div>
-      <div class="subtitle">Oldest snapshots found</div>
+      <div id="results-icon" class="status-icon">&#8987;</div>
+      <div id="results-title" class="title">Checking</div>
+      <div id="results-subtitle" class="subtitle">Checking archives&hellip;</div>
       <div id="results-list"></div>
-    </div>
-
-    <!-- Not Archived State -->
-    <div id="state-not-archived" class="card hidden">
-      <button
-        type="button"
-        class="btn-recheck"
-        title="Recheck this page"
-        aria-label="Recheck this page"
-      >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
-          <path d="M3 3v5h5"/>
-          <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
-          <path d="M16 16h5v5"/>
-        </svg>
-      </button>
-      <div class="status-icon">&mdash;</div>
-      <div class="title">Not Archived</div>
-      <div class="message">No archive found for this page.</div>
     </div>
 
     <!-- Ignored State -->
@@ -409,46 +383,6 @@
       <div class="status-icon">&#8212;</div>
       <div class="title">No Page to Check</div>
       <div class="message">Navigate to a web page to check for archives.</div>
-    </div>
-
-    <!-- Error State -->
-    <div id="state-error" class="card hidden">
-      <button
-        type="button"
-        class="btn-recheck"
-        title="Try checking archives again for this page"
-        aria-label="Try checking archives again for this page"
-      >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
-          <path d="M3 3v5h5"/>
-          <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
-          <path d="M16 16h5v5"/>
-        </svg>
-      </button>
-      <div class="status-icon">!</div>
-      <div class="title">Check Failed</div>
-      <div class="message">Could not reach the archive services.</div>
-    </div>
-
-    <!-- Temporarily Unavailable State -->
-    <div id="state-unavailable" class="card hidden">
-      <button
-        type="button"
-        class="btn-recheck"
-        title="Try checking archives again for this page"
-        aria-label="Try checking archives again for this page"
-      >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
-          <path d="M3 3v5h5"/>
-          <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
-          <path d="M16 16h5v5"/>
-        </svg>
-      </button>
-      <div class="status-icon">&#8987;</div>
-      <div class="title">Services Busy</div>
-      <div class="message">The archive services are rate-limiting or responding slowly right now. Try again in a moment.</div>
     </div>
 
     <!-- Control Bar -->

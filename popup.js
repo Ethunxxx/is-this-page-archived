@@ -9,13 +9,12 @@ const ARCHIVE_TODAY = "https://archive.ph";
 const WAYBACK_SAVE = "https://web.archive.org/save/";
 const IGNORE_STORAGE_KEY = "ignoredSites";
 
-const stateLoading = document.getElementById("state-loading");
-const stateArchived = document.getElementById("state-archived");
-const stateNotArchived = document.getElementById("state-not-archived");
+const stateResults = document.getElementById("state-results");
 const stateNa = document.getElementById("state-na");
-const stateError = document.getElementById("state-error");
-const stateUnavailable = document.getElementById("state-unavailable");
 const stateIgnored = document.getElementById("state-ignored");
+const resultsIcon = document.getElementById("results-icon");
+const resultsTitle = document.getElementById("results-title");
+const resultsSubtitle = document.getElementById("results-subtitle");
 const resultsList = document.getElementById("results-list");
 const ignoredMessage = document.getElementById("ignored-message");
 const linkReenable = document.getElementById("link-reenable");
@@ -29,31 +28,18 @@ const btnExcludeLabel = btnExclude.querySelector(".control-label");
 const btnExcludeHost = document.getElementById("btn-exclude-host");
 const btnExcludeDomain = document.getElementById("btn-exclude-domain");
 const btnExcludeCancel = document.getElementById("btn-exclude-cancel");
-const loadingMessage = stateLoading.querySelector(".message");
-const archivedSubtitle = stateArchived.querySelector(".subtitle");
-const unavailableMessage = stateUnavailable.querySelector(".message");
-const errorMessage = stateError.querySelector(".message");
-const DEFAULT_LOADING_MESSAGE = "Checking archives...";
 const DEFAULT_ARCHIVED_SUBTITLE = "Oldest snapshots found";
-const DEFAULT_UNAVAILABLE_MESSAGE =
-  "The archive services are rate-limiting or responding slowly right now. Try again in a moment.";
-const DEFAULT_ERROR_MESSAGE = "Could not reach the archive services.";
 const POPUP_CHECK_TIMEOUT_MS = 18000;
 const SERVICE_NAMES = {
   archiveToday: "archive.today",
   wayback: "Wayback Machine",
 };
+const SERVICE_ORDER = ["archiveToday", "wayback"];
 
 function showState(el) {
-  [
-    stateLoading,
-    stateArchived,
-    stateNotArchived,
-    stateNa,
-    stateError,
-    stateUnavailable,
-    stateIgnored,
-  ].forEach((s) => s.classList.add("hidden"));
+  [stateResults, stateNa, stateIgnored].forEach((s) =>
+    s.classList.add("hidden")
+  );
   el.classList.remove("hidden");
 }
 
@@ -114,36 +100,50 @@ function setIgnoreRules(rules) {
   return chrome.storage.local.set({ [IGNORE_STORAGE_KEY]: rules });
 }
 
-function createResultRow(serviceName, datetime, url) {
-  const row = document.createElement("div");
-  row.className = "result-row";
+const ROW_ICON_PATHS = {
+  // circle with a dash: no snapshot
+  not_found: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z", "M8 12h8"],
+  // clock: busy / rate-limited
+  rate_limited: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z", "M12 7v5l3 2"],
+  // alert triangle: unreachable
+  error: [
+    "M10.3 4.2 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.2a2 2 0 0 0-3.4 0z",
+    "M12 9v4",
+    "M12 17h.01",
+  ],
+};
 
-  const info = document.createElement("div");
-  info.className = "result-info";
+const ROW_STATUS_MESSAGES = {
+  checking: "Checking...",
+  not_found: "No snapshot found",
+  rate_limited: "Busy, try again later",
+  error: "Could not be reached",
+  skipped: "Not checked",
+};
 
-  const name = document.createElement("div");
-  name.className = "result-service";
-  name.textContent = serviceName;
-  info.appendChild(name);
-
-  if (datetime) {
-    const date = document.createElement("div");
-    date.className = "result-date";
-    date.textContent = formatDatetime(datetime);
-    info.appendChild(date);
-  }
-
-  const btn = document.createElement("button");
-  btn.className = "btn-open";
-  btn.textContent = "Open";
-  btn.addEventListener("click", () => openUrl(url));
-
-  row.appendChild(info);
-  row.appendChild(btn);
-  return row;
+function createRowStatusIcon(status) {
+  const paths = ROW_ICON_PATHS[status] || ROW_ICON_PATHS.not_found;
+  const wrap = document.createElement("span");
+  wrap.className = "row-status-icon";
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  paths.forEach((d) => {
+    const path = document.createElementNS(ns, "path");
+    path.setAttribute("d", d);
+    svg.appendChild(path);
+  });
+  wrap.appendChild(svg);
+  return wrap;
 }
 
-function createStatusRow(serviceName, message) {
+function createServiceRow(service, status, memento) {
   const row = document.createElement("div");
   row.className = "result-row";
 
@@ -152,15 +152,38 @@ function createStatusRow(serviceName, message) {
 
   const name = document.createElement("div");
   name.className = "result-service";
-  name.textContent = serviceName;
+  name.textContent = serviceName(service);
   info.appendChild(name);
 
-  const status = document.createElement("div");
-  status.className = "result-date";
-  status.textContent = message;
-  info.appendChild(status);
+  const detail = document.createElement("div");
+  detail.className = "result-date";
 
+  if (status === "found" && memento) {
+    detail.textContent = formatDatetime(memento.datetime);
+    info.appendChild(detail);
+
+    const btn = document.createElement("button");
+    btn.className = "btn-open";
+    btn.textContent = "Open";
+    btn.addEventListener("click", () => openUrl(memento.url));
+
+    row.appendChild(info);
+    row.appendChild(btn);
+    return row;
+  }
+
+  detail.textContent = ROW_STATUS_MESSAGES[status] || ROW_STATUS_MESSAGES.not_found;
+  info.appendChild(detail);
   row.appendChild(info);
+
+  if (status === "checking") {
+    const spinner = document.createElement("span");
+    spinner.className = "row-spinner";
+    row.appendChild(spinner);
+  } else {
+    row.appendChild(createRowStatusIcon(status));
+  }
+
   return row;
 }
 
@@ -180,37 +203,12 @@ function getServiceStatuses(result) {
   };
 }
 
-function statusSummary(service, status) {
-  const name = serviceName(service);
-  if (status === "found") return `${name} found a snapshot`;
-  if (status === "not_found") return `${name} did not find a snapshot`;
-  if (status === "rate_limited") return `${name} is busy (rate-limited)`;
-  if (status === "error") return `${name} could not be reached`;
-  return `${name} is still checking`;
-}
-
-// Build a per-service sentence like "archive.today is busy (rate-limited).
-// Wayback Machine did not find a snapshot." so the inconclusive cards report what
-// each service actually said instead of a flat, overconfident verdict.
-function serviceDetailMessage(result) {
-  const statuses = result && getServiceStatuses(result);
-  if (!statuses) return "";
-  return ["archiveToday", "wayback"]
-    .filter((service) => statuses[service] && statuses[service] !== "skipped")
-    .map((service) => statusSummary(service, statuses[service]))
-    .join(". ");
-}
-
-function renderUnavailable(result) {
-  const detail = serviceDetailMessage(result);
-  unavailableMessage.textContent = detail ? `${detail}. Try again in a moment.` : DEFAULT_UNAVAILABLE_MESSAGE;
-  showState(stateUnavailable);
-}
-
-function renderError(result) {
-  const detail = serviceDetailMessage(result);
-  errorMessage.textContent = detail ? `${detail}.` : DEFAULT_ERROR_MESSAGE;
-  showState(stateError);
+// Render the unified card with both rows forced into one status. Used when
+// there is no per-service result to show: the initial loading state
+// ("checking"), a timed-out check ("rate_limited"), or a missing tab /
+// non-checkable URL ("error").
+function renderUniformStatus(status) {
+  renderUnifiedResult({ services: { archiveToday: status, wayback: status } });
 }
 
 let activeCheck = null;
@@ -247,9 +245,9 @@ function performCheck(tab, { force }) {
     } else if (timedOut) {
       // Nothing landed in time — almost always the services being slow, not a
       // broken extension. Show the recoverable "busy" state, not a hard error.
-      renderUnavailable(null);
+      renderUniformStatus("rate_limited");
     } else {
-      showState(stateError);
+      renderUniformStatus("error");
     }
   };
   const onChange = (changes, area) => {
@@ -272,8 +270,7 @@ function performCheck(tab, { force }) {
   const startNetworkCheck = ({ preserveCurrent = false } = {}) => {
     if (resolved) return;
     if (!preserveCurrent) {
-      loadingMessage.textContent = DEFAULT_LOADING_MESSAGE;
-      showState(stateLoading);
+      renderUniformStatus("checking");
     }
     // Tell the service worker to run the check. Without this, a cold-
     // respawned SW with no pending tab event would never check this tab
@@ -326,14 +323,11 @@ function maybeSearchArchiveTodayVariants(tab, result) {
   if (parsed.pathname.length <= 1) return;
 
   variantSearchActive = true;
-  // If Wayback already gave us an archived view, show a gentle "checking" row
-  // for archive.today while the slower search runs. If nothing was found at
-  // all, search silently so we don't flash the full loading state.
-  if (result.archived) renderResult(withArchiveTodayChecking(result));
+  // The archive.today row is always visible now, so show its spinner while
+  // the slower wildcard search runs, whatever the other service reported.
+  renderResult(withArchiveTodayChecking(result));
 
-  const revert = () => {
-    if (result.archived) renderResult(result);
-  };
+  const revert = () => renderResult(result);
   chrome.runtime
     .sendMessage({ type: "searchArchiveTodayVariants", tabId: tab.id, url: tab.url })
     .then((resp) => {
@@ -480,7 +474,7 @@ function wireReenable(tab) {
 async function init() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) {
-    showState(stateError);
+    renderUniformStatus("error");
     return;
   }
 
@@ -525,77 +519,54 @@ function renderResult(result) {
       .catch(() => showState(stateIgnored));
     return;
   }
-  if (result.archived) {
-    renderArchivedResult(result);
-    return;
-  }
-  if (result.unavailable) {
-    renderUnavailable(result);
-    return;
-  }
-  if (result.error) {
-    renderError(result);
-    return;
-  }
-  if (result.checking) {
-    renderLoadingResult(result);
-    return;
-  }
-  if (!result.archived && !result.archiveToday && !result.wayback) {
-    showState(stateNotArchived);
-    return;
-  }
-
-  renderArchivedResult(result);
+  renderUnifiedResult(result);
 }
 
-function renderLoadingResult(result) {
+function setResultsHeader(icon, title, subtitle) {
+  resultsIcon.innerHTML = icon;
+  resultsTitle.textContent = title;
+  resultsSubtitle.textContent = subtitle;
+}
+
+function renderUnifiedResult(result) {
   const statuses = getServiceStatuses(result);
-  const pending = Object.keys(statuses).filter(
+  const pending = SERVICE_ORDER.filter(
     (service) => statuses[service] === "checking"
   );
-  const finished = Object.keys(statuses).filter(
-    (service) => statuses[service] !== "checking"
+  const anyFound = SERVICE_ORDER.some(
+    (service) => statuses[service] === "found" || result[service]
   );
 
-  if (finished.length && pending.length) {
-    loadingMessage.textContent = `${finished
-      .map((service) => statusSummary(service, statuses[service]))
-      .join(". ")}. Checking ${formatServiceList(pending)}...`;
+  if (anyFound) {
+    setResultsHeader(
+      "&#10003;",
+      "Archived",
+      pending.length
+        ? `Snapshot found; still checking ${formatServiceList(pending)}.`
+        : DEFAULT_ARCHIVED_SUBTITLE
+    );
+  } else if (pending.length) {
+    setResultsHeader("&#8987;", "Checking", "Checking archives...");
+  } else if (SERVICE_ORDER.some((s) => statuses[s] === "rate_limited")) {
+    setResultsHeader(
+      "&#8987;",
+      "Services Busy",
+      "Rate-limited or responding slowly. Try again in a moment."
+    );
+  } else if (SERVICE_ORDER.some((s) => statuses[s] === "error")) {
+    setResultsHeader("!", "Check Failed", "Could not reach the archive services.");
   } else {
-    loadingMessage.textContent = DEFAULT_LOADING_MESSAGE;
+    setResultsHeader("&mdash;", "Not Archived", "No archive found for this page.");
   }
 
-  showState(stateLoading);
-}
-
-function renderArchivedResult(result) {
   resultsList.innerHTML = "";
-  const statuses = getServiceStatuses(result);
-  const pending = Object.keys(statuses).filter(
-    (service) => statuses[service] === "checking"
-  );
-  archivedSubtitle.textContent = pending.length
-    ? `Snapshot found; still checking ${formatServiceList(pending)}.`
-    : DEFAULT_ARCHIVED_SUBTITLE;
-
-  if (result.archiveToday) {
-    resultsList.appendChild(
-      createResultRow("archive.today", result.archiveToday.datetime, result.archiveToday.url)
-    );
-  }
-
-  if (result.wayback) {
-    resultsList.appendChild(
-      createResultRow("Wayback Machine", result.wayback.datetime, result.wayback.url)
-    );
-  }
-
-  pending.forEach((service) => {
-    resultsList.appendChild(createStatusRow(serviceName(service), "Still checking..."));
+  SERVICE_ORDER.forEach((service) => {
+    const memento = result[service];
+    const status = memento ? "found" : statuses[service] || "not_found";
+    resultsList.appendChild(createServiceRow(service, status, memento));
   });
 
-  showState(stateArchived);
+  showState(stateResults);
 }
 
 function renderFooterVersion() {
