@@ -105,6 +105,8 @@ const ROW_ICON_PATHS = {
   not_found: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z", "M8 12h8"],
   // clock: busy / rate-limited
   rate_limited: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z", "M12 7v5l3 2"],
+  // shield with a check: human verification (CAPTCHA) needed
+  captcha: ["M12 3l8 3v6c0 4.6-3.4 8.4-8 9-4.6-.6-8-4.4-8-9V6l8-3z", "M9 12l2 2 4-4"],
   // alert triangle: unreachable
   error: [
     "M10.3 4.2 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.2a2 2 0 0 0-3.4 0z",
@@ -117,6 +119,7 @@ const ROW_STATUS_MESSAGES = {
   checking: "Checking...",
   not_found: "No snapshot found",
   rate_limited: "Busy, try again later",
+  captcha: "CAPTCHA required",
   error: "Could not be reached",
   skipped: "Not checked",
 };
@@ -176,6 +179,16 @@ function createServiceRow(service, status, memento) {
   info.appendChild(detail);
   row.appendChild(info);
 
+  if (status === "captcha") {
+    const btn = document.createElement("button");
+    btn.className = "btn-open";
+    btn.textContent = "Solve";
+    btn.title = "Open archive.today's CAPTCHA in a small window";
+    btn.addEventListener("click", () => openCaptchaWindow(btn));
+    row.appendChild(btn);
+    return row;
+  }
+
   if (status === "checking") {
     const spinner = document.createElement("span");
     spinner.className = "row-spinner";
@@ -213,6 +226,24 @@ function renderUniformStatus(status) {
 
 let activeCheck = null;
 let variantSearchActive = false;
+let currentTab = null;
+
+// archive.today is showing its reCAPTCHA wall. The service worker opens it in
+// a small popup window, watches for the solve, re-checks the page and closes
+// the window. This popup loses focus (and closes) when that window opens;
+// reopening it afterwards shows the fresh result.
+function openCaptchaWindow(btn) {
+  if (!currentTab) return;
+  btn.disabled = true;
+  btn.textContent = "Opening\u2026";
+  chrome.runtime
+    .sendMessage({ type: "solveArchiveTodayCaptcha", tabId: currentTab.id, url: currentTab.url })
+    .catch(() => {})
+    .finally(() => {
+      btn.disabled = false;
+      btn.textContent = "Solve";
+    });
+}
 
 function performCheck(tab, { force }) {
   // Tear down any previous check so a Recheck click can't double-listen.
@@ -494,6 +525,7 @@ async function init() {
     return;
   }
 
+  currentTab = tab;
   wireRecheck(tab);
   wireControlBar(tab);
   wireReenable(tab);
@@ -547,6 +579,12 @@ function renderUnifiedResult(result) {
     );
   } else if (pending.length) {
     setResultsHeader("&#8987;", "Checking", "Checking archives...");
+  } else if (statuses.archiveToday === "captcha") {
+    setResultsHeader(
+      "&#128274;",
+      "Human Check Needed",
+      "archive.today is asking for a one-time CAPTCHA. Solve it to finish the check."
+    );
   } else if (SERVICE_ORDER.some((s) => statuses[s] === "rate_limited")) {
     setResultsHeader(
       "&#8987;",

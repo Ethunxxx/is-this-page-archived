@@ -58,6 +58,11 @@ const INACTIVE_ICON_PATHS = {
 const FETCH_TIMEOUT_MS = 10000;
 const ARCHIVE_TODAY_FETCH_TIMEOUT_MS = 5000;
 const ARCHIVE_TODAY_MEMENTO_PROBE_TIMEOUT_MS = 2500;
+// archive.today sometimes answers 429 with a Google reCAPTCHA page rather than
+// a plain rate limit. That needs a human, so it gets its own status and flow
+// (see the CAPTCHA section near the end of this file).
+const ARCHIVE_TODAY_CAPTCHA_WINDOW = { width: 520, height: 700 };
+const ARCHIVE_TODAY_CAPTCHA_SESSION_MAX_MS = 5 * 60 * 1000;
 const CACHE_TTL_MS = 60 * 60 * 1000;
 const TRANSIENT_RETRY_BASE_MS = 900;
 const TRANSIENT_RETRY_JITTER_MS = 600;
@@ -104,12 +109,25 @@ function transientError(message) {
   return Object.assign(new Error(message), { transient: true });
 }
 
+// archive.today's reCAPTCHA wall: transient in the sense that it clears, but
+// only a human can clear it, so it must never be retried blindly.
+function captchaError(host, challengeUrl) {
+  return Object.assign(new Error(`archive.today CAPTCHA on ${host}`), {
+    transient: true,
+    captcha: true,
+    host,
+    challengeUrl,
+  });
+}
+
 // A fetch aborted by our own timeout surfaces as an AbortError; treat that as
-// transient (the service was too slow) rather than a hard error.
+// transient (the service was too slow) rather than a hard error. The timedOut
+// flag lets the archive.today mirror cascade tell "slow backend" (shared by
+// every alias) apart from a fast per-hostname 429.
 function asTransient(err, signal, label) {
   if (err?.transient) return err;
   if (signal?.aborted || err?.name === "AbortError") {
-    return transientError(`${label} timed out`);
+    return Object.assign(transientError(`${label} timed out`), { timedOut: true });
   }
   return err;
 }
@@ -119,7 +137,7 @@ function wait(ms) {
 }
 
 function isFailureStatus(status) {
-  return status === "error" || status === "rate_limited";
+  return status === "error" || status === "rate_limited" || status === "captcha";
 }
 
 // When no snapshot was found, a definitive "Not Archived" requires BOTH services
@@ -131,7 +149,7 @@ function applyFailureFlag(result, services) {
   const statuses = [services.archiveToday, services.wayback];
   if (statuses.includes("checking")) return; // still in flight — too early to judge
   if (!statuses.some(isFailureStatus)) return; // both answered, no snapshot → genuinely not archived
-  if (statuses.includes("rate_limited")) {
+  if (statuses.includes("rate_limited") || statuses.includes("captcha")) {
     result.unavailable = true;
   } else {
     result.error = true;
@@ -153,7 +171,8 @@ async function withTransientRetry(fn) {
   try {
     return await fn();
   } catch (err) {
-    if (!err?.transient) throw err;
+    // A CAPTCHA wall does not clear on its own; retrying just re-fetches it.
+    if (!err?.transient || err?.captcha) throw err;
     await wait(TRANSIENT_RETRY_BASE_MS + Math.floor(Math.random() * TRANSIENT_RETRY_JITTER_MS));
     return await fn();
   }
@@ -350,6 +369,7 @@ async function probeArchiveTodayMementoUrl(url, options) {
     const resp = await fetch(url, {
       cache: "no-store",
       redirect: "follow",
+      credentials: "include",
       signal,
       ...options,
     });
@@ -376,25 +396,108 @@ async function firstReachableArchiveTodayMementoUrl(mementoUrl) {
   return mementoUrl;
 }
 
+// ---- archive.today mirror preference + CAPTCHA session ----------------------
+//
+// The aliases share one archive but not one anti-bot policy: a CAPTCHA wall
+// can sit on some hostnames and not others, and which ones changes over time.
+// So we remember the alias that answered most recently (the next lookup tries
+// it first), the alias that most recently served the CAPTCHA (the one the
+// solve window opens, so the cookie it clears is the one the lookup sends),
+// and the open solve window, if any. It all lives in chrome.storage.session:
+// solving a CAPTCHA takes longer than the service worker stays alive for, so
+// in-memory state alone would be gone by the time the solve lands. It does
+// not survive a browser restart, and does not need to.
+const ARCHIVE_TODAY_STATE_KEY = "archiveTodayState";
+let archiveTodayState = { preferredHost: null, captchaHost: null, captchaSession: null };
+let archiveTodayStateHydrated = null;
+
+// Resolves to the live state object (hydrated from storage once per worker
+// life), so a caller always sees writes made since hydration.
+async function loadArchiveTodayState() {
+  if (!archiveTodayStateHydrated) {
+    archiveTodayStateHydrated = chrome.storage.session
+      .get(ARCHIVE_TODAY_STATE_KEY)
+      .then((data) => {
+        const stored = data[ARCHIVE_TODAY_STATE_KEY];
+        if (stored) archiveTodayState = { ...archiveTodayState, ...stored };
+      })
+      .catch(() => {});
+  }
+  await archiveTodayStateHydrated;
+  return archiveTodayState;
+}
+
+// Every writer awaits loadArchiveTodayState() first, so a write can't be
+// clobbered by the one-time hydration.
+function updateArchiveTodayState(patch) {
+  archiveTodayState = { ...archiveTodayState, ...patch };
+  silent(chrome.storage.session.set({ [ARCHIVE_TODAY_STATE_KEY]: archiveTodayState }));
+}
+
+function archiveTodayHostOrder() {
+  const preferred = archiveTodayState.preferredHost;
+  if (!preferred || !ARCHIVE_TODAY_TIMEMAP_HOSTS.includes(preferred)) {
+    return ARCHIVE_TODAY_TIMEMAP_HOSTS;
+  }
+  return [preferred, ...ARCHIVE_TODAY_TIMEMAP_HOSTS.filter((h) => h !== preferred)];
+}
+
+function captchaSessionActive(session) {
+  return !!session && Date.now() - session.startedAt < ARCHIVE_TODAY_CAPTCHA_SESSION_MAX_MS;
+}
+
 async function checkArchiveToday(url) {
+  const state = await loadArchiveTodayState();
+  // The user is clearing a CAPTCHA in the solve window: stay off the
+  // archive.today hosts until that settles, so a background lookup can't
+  // collect a fresh challenge cookie and invalidate the one being cleared.
+  if (captchaSessionActive(state.captchaSession)) {
+    throw captchaError(state.captchaSession.host, state.captchaSession.challengeUrl);
+  }
   let lastError = null;
-  for (const host of ARCHIVE_TODAY_TIMEMAP_HOSTS) {
+  let captcha = null;
+  for (const host of archiveTodayHostOrder()) {
     try {
       // A reachable mirror is authoritative — the hosts share one archive — so
       // its answer (a snapshot or a definitive "none") ends the search. Polling
       // the remaining mirrors would only add load for no new information.
-      return await fetchArchiveTodayTimemap(url, host);
+      const memento = await fetchArchiveTodayTimemap(url, host);
+      if (archiveTodayState.preferredHost !== host) {
+        updateArchiveTodayState({ preferredHost: host });
+      }
+      return memento;
     } catch (err) {
       lastError = err;
-      // A rate-limit/timeout almost certainly applies to every mirror (shared
-      // infrastructure, IP-based throttling), so cascading through the other
-      // three just amplifies the load that got us throttled. Stop and report it.
-      if (err?.transient) break;
-      // A hard/connection error means only this mirror is unreachable; another
-      // may still answer, so fall through and try the next one.
+      // The CAPTCHA wall is a per-hostname policy, not shared load: another
+      // alias often answers at once, and a walled 429 costs a few hundred ms.
+      // Keep going; the CAPTCHA is only the verdict if nothing answers.
+      if (err?.captcha) {
+        captcha = captcha || err;
+        continue;
+      }
+      // A timeout means the shared backend is slow, which applies to every
+      // alias; cascading would just multiply the wait. Stop and report it.
+      if (err?.timedOut) break;
+      // A plain 429/5xx or connection error is this alias's problem only;
+      // another may still answer, so fall through and try the next one.
     }
   }
+  if (captcha) {
+    if (archiveTodayState.captchaHost !== captcha.host) {
+      updateArchiveTodayState({ captchaHost: captcha.host });
+    }
+    throw captcha;
+  }
   throw lastError || transientError("archive.today unavailable");
+}
+
+// archive.today's bot wall is a 429 whose body is an HTML page embedding a
+// Google reCAPTCHA widget. A plain rate limit has no such body.
+async function isArchiveTodayCaptchaResponse(resp) {
+  if (resp.status !== 429) return false;
+  if (!/text\/html/i.test(resp.headers.get("content-type") || "")) return false;
+  const html = await resp.text().catch(() => "");
+  return /g-recaptcha|chk_captcha|complete the security check/i.test(html);
 }
 
 async function fetchArchiveTodayTimemap(url, host) {
@@ -406,10 +509,17 @@ async function fetchArchiveTodayTimemap(url, host) {
     // like ".../?__readwiseLocation=" is seen as a path with no query, matches
     // no memento, and 404s. encodeURI preserves "?", "=", "&", "/" and ":"
     // while still escaping genuinely unsafe characters (spaces, etc.).
-    const resp = await fetch(
-      `https://${host}/timemap/${encodeURI(url)}`,
-      { signal }
-    );
+    // Cookies must ride along: archive.today keys a cleared CAPTCHA to the
+    // cookie it set, and an extension fetch is cross-origin, so it would send
+    // none by default. Host permissions exempt these hosts from CORS, so the
+    // wildcard Access-Control-Allow-Origin the service sends is not a problem.
+    const challengeUrl = archiveTodayChallengeUrl(host, url);
+    const resp = await fetch(challengeUrl, { signal, credentials: "include" });
+    // A 429 carrying the reCAPTCHA page is a bot wall, not load: it needs a
+    // human, so it gets its own status and flow rather than a retry.
+    if (await isArchiveTodayCaptchaResponse(resp)) {
+      throw captchaError(host, challengeUrl);
+    }
     clearTimer();
     // 408/425/429: rate-limit / try-again — transient. 5xx: transient.
     // Other 4xx: treat as "no snapshot" (cacheable).
@@ -509,7 +619,13 @@ async function discoverArchiveTodayVariantUrl(prefixBase, target) {
 async function fetchArchiveTodayWildcard(prefixBase, target, host) {
   const { signal, clearTimer } = makeAbortable(ARCHIVE_TODAY_FETCH_TIMEOUT_MS);
   try {
-    const resp = await fetch(`https://${host}/${encodeURI(prefixBase)}*`, { signal });
+    const resp = await fetch(`https://${host}/${encodeURI(prefixBase)}*`, {
+      signal,
+      credentials: "include",
+    });
+    if (await isArchiveTodayCaptchaResponse(resp)) {
+      throw captchaError(host, archiveTodayChallengeUrl(host, prefixBase));
+    }
     clearTimer();
     if (resp.status === 408 || resp.status === 425 || resp.status === 429) {
       throw transientError(`archive.today search HTTP ${resp.status}`);
@@ -778,7 +894,11 @@ async function fetchBoth(url, onProgress = () => {}) {
     // Query archive.today only for the page-identity candidates above, and only
     // until one yields a snapshot; Wayback still runs for every candidate.
     const skipArchiveToday =
-      Boolean(result?.archiveToday) || !archiveTodayCandidates.has(normalizeUrl(candidate));
+      Boolean(result?.archiveToday) ||
+      // Once the CAPTCHA wall is up it is up for every candidate; "skipped"
+      // defers to the earlier verdict, so the CAPTCHA state survives the merge.
+      result?.services?.archiveToday === "captcha" ||
+      !archiveTodayCandidates.has(normalizeUrl(candidate));
     const checked = await fetchCandidate(candidate, (candidateResult) => {
       // Progress from a later URL candidate should preserve snapshots already
       // found on earlier candidates. If more fallbacks remain, keep missing
@@ -832,6 +952,8 @@ function mergeServiceStatus(previous, next, value) {
   if (next === "skipped") return previous;
   if (previous === "found" || next === "found") return "found";
   if (previous === "checking" || next === "checking") return "checking";
+  // The CAPTCHA is the one failure the user can act on, so it outranks the rest.
+  if (previous === "captcha" || next === "captcha") return "captcha";
   if (previous === "rate_limited" || next === "rate_limited") return "rate_limited";
   if (previous === "error" || next === "error") return "error";
   return "not_found";
@@ -902,9 +1024,14 @@ async function settleService(service, promise, state, publish) {
     state[service] = value;
     state.services[service] = value ? "found" : "not_found";
   } catch (err) {
+    // "captcha" is archive.today's bot wall (the popup offers to open it);
     // "rate_limited" is a transient failure (busy / slow / 429) the user can
     // retry; "error" is a hard failure. The popup surfaces them differently.
-    state.services[service] = err?.transient ? "rate_limited" : "error";
+    state.services[service] = err?.captcha
+      ? "captcha"
+      : err?.transient
+        ? "rate_limited"
+        : "error";
   } finally {
     publish();
   }
@@ -1125,48 +1252,130 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     );
     return true;
   }
+  // The popup's "Solve" button: open archive.today's CAPTCHA in a small popup
+  // window and re-check the page once it is cleared. Async reply → return true.
+  if (
+    msg.type === "solveArchiveTodayCaptcha" &&
+    typeof msg.url === "string" &&
+    typeof msg.tabId === "number"
+  ) {
+    openArchiveTodayCaptcha(msg.url, msg.tabId).then(
+      (outcome) => sendResponse(outcome),
+      () => sendResponse({ opened: false })
+    );
+    return true;
+  }
 });
 
-async function searchArchiveTodayVariants(url, tabId) {
-  if (!isCheckableUrl(url) || isUserIgnored(url)) return null;
-  const memento = await checkArchiveTodayPrefix(url).catch(() => null);
-  // Await the merge so the in-memory cache write completes before the message
-  // handler resolves — otherwise the worker can go idle after sendResponse and
-  // drop the badge/cache update.
-  if (memento) await applyArchiveTodayVariant(tabId, url, memento);
-  return memento;
+// ---- archive.today CAPTCHA solve window -------------------------------------
+//
+// When every alias answers with the reCAPTCHA wall, the popup offers a "Solve"
+// button. It opens the walled timemap URL in a small popup window rather than
+// a tab: it is a one-off chore, and a window can be closed by us the moment it
+// is done. The challenge page rewrites its address to "/" while it waits and,
+// once solved, reloads the original timemap URL. We watch for that reload,
+// re-run the lookup (now carrying the cleared cookie), and on success close
+// the window and re-check the page that triggered it. The session itself is
+// persisted with the rest of the archive.today state (see above), because the
+// worker will almost certainly be restarted between opening and solving.
+
+let captchaVerifying = false;
+
+function archiveTodayChallengeUrl(host, pageUrl) {
+  return `https://${host}/timemap/${encodeURI(pageUrl)}`;
 }
 
-// Fold a variant snapshot into the cached + stored result so the badge flips to
-// "archived" and a reopened popup shows it without re-running the search.
-async function applyArchiveTodayVariant(tabId, url, memento) {
-  const stored = await getStoredTabResult(tabId).catch(() => null);
-  const base =
-    stored && storedResultApplies(stored, url)
-      ? stored
-      : cacheGet(url)?.value || { pageUrl: url, services: {} };
-  const merged = mergeArchiveTodayMemento(base, memento, url);
-  cacheSet(url, { value: merged, cachedAt: Date.now() });
-  silent(applyResultIfStillCurrent(tabId, url, merged));
+async function openArchiveTodayCaptcha(pageUrl, sourceTabId) {
+  const state = await loadArchiveTodayState();
+  if (state.captchaSession) {
+    // One window at a time: bring the existing one forward.
+    const focused = await chrome.windows
+      .update(state.captchaSession.windowId, { focused: true })
+      .catch(() => null);
+    if (focused) return { opened: true, reused: true };
+    updateArchiveTodayState({ captchaSession: null }); // the window is already gone
+  }
+  const host = archiveTodayState.captchaHost || archiveTodayHostOrder()[0];
+  const challengeUrl = archiveTodayChallengeUrl(host, pageUrl);
+  const win = await chrome.windows.create({
+    url: challengeUrl,
+    type: "popup",
+    focused: true,
+    ...ARCHIVE_TODAY_CAPTCHA_WINDOW,
+  });
+  const tab = win?.tabs?.[0];
+  if (!tab) return { opened: false };
+  updateArchiveTodayState({
+    captchaSession: {
+      windowId: win.id,
+      tabId: tab.id,
+      host,
+      challengeUrl,
+      pageUrl,
+      sourceTabId,
+      startedAt: Date.now(),
+    },
+  });
+  return { opened: true };
 }
 
-function mergeArchiveTodayMemento(result, memento, url) {
-  const services = { ...(result.services || {}) };
-  services.archiveToday = "found";
-  if (!services.wayback) services.wayback = result.wayback ? "found" : "not_found";
-  const merged = {
-    ...result,
-    archived: true,
-    archiveToday: memento,
-    checking: false,
-    services,
-    pageUrl: url,
-  };
-  // We have a snapshot now, so this is no longer an all-services-failed result.
-  delete merged.error;
-  delete merged.unavailable;
-  return merged;
+async function verifyArchiveTodayCaptchaSolved(session) {
+  if (captchaVerifying) return;
+  captchaVerifying = true;
+  try {
+    // Throws the CAPTCHA error while the wall is still up. A snapshot or a
+    // definitive "none" both mean it is down.
+    await fetchArchiveTodayTimemap(session.pageUrl, session.host);
+  } catch {
+    return; // still walled (or a blip): wait for the window's next load
+  } finally {
+    captchaVerifying = false;
+  }
+  if (archiveTodayState.captchaSession?.windowId !== session.windowId) return;
+  updateArchiveTodayState({ captchaSession: null, preferredHost: session.host });
+  silent(chrome.windows.remove(session.windowId));
+  recheckAfterCaptcha(session);
 }
+
+function recheckAfterCaptcha({ pageUrl, sourceTabId }) {
+  cacheDelete(pageUrl);
+  debouncedCheck(pageUrl, sourceTabId);
+}
+
+function isArchiveTodayTimemapUrl(url) {
+  return (
+    typeof url === "string" &&
+    ARCHIVE_TODAY_TIMEMAP_HOSTS.some((host) => url.startsWith(`https://${host}/timemap/`))
+  );
+}
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status !== "complete") return;
+  // Only a load of the timemap URL itself can be the post-solve reload; the
+  // waiting challenge page sits on "/".
+  if (!isArchiveTodayTimemapUrl(tab.url)) return;
+  silent(
+    loadArchiveTodayState().then((state) => {
+      const session = state.captchaSession;
+      if (!session || tabId !== session.tabId) return;
+      if (!tab.url.startsWith(`https://${session.host}/timemap/`)) return;
+      return verifyArchiveTodayCaptchaSolved(session);
+    })
+  );
+});
+
+chrome.windows.onRemoved.addListener((windowId) => {
+  silent(
+    loadArchiveTodayState().then((state) => {
+      const session = state.captchaSession;
+      if (!session || windowId !== session.windowId) return;
+      updateArchiveTodayState({ captchaSession: null });
+      // Closed by the user. Re-check anyway: if they solved it and we missed
+      // the reload this picks it up; if not, the popup offers the CAPTCHA again.
+      recheckAfterCaptcha(session);
+    })
+  );
+});
 
 function pruneCache() {
   if (cache.size > 500) {

@@ -46,7 +46,7 @@ After you open a page (follow a link, enter a URL, or refresh), the service work
 | archive.today | `https://archive.today/timemap/<url>` with alias fallbacks, plus an on-demand `https://archive.today/<url>*` wildcard search as a miss fallback | Memento TimeMap (RFC 7089), then HTML search |
 | Wayback Machine | `https://web.archive.org/cdx/search/cdx?url=<url>&output=json&limit=1&fl=timestamp,original&sort=oldest`, with `https://archive.org/wayback/available?url=<url>` as an error fallback and a `matchType=prefix` sweep as a miss fallback | CDX API, then availability API |
 
-The two primary lookups (TimeMap and CDX) return structured data with no anti-bot restrictions. The archive.today wildcard search is the exception — it is rate-limited, so it runs only as an on-demand fallback (see below).
+The two primary lookups (TimeMap and CDX) return structured data. Wayback's has no anti-bot restrictions. archive.today's TimeMap usually has none either, but the service can put a Google reCAPTCHA wall (served as HTTP 429) in front of some of its aliases for browser-like clients; the extension detects that page, tries the other aliases, and only when every alias is walled asks the user to solve it once (see **archive.today CAPTCHA** below). The archive.today wildcard search is rate-limited, so it runs only as an on-demand fallback (see below).
 
 If the exact URL is not archived and its query string only differs by known
 tracking or decoration parameters such as `utm_*`, `_gl`, `_ga`, `fbclid`,
@@ -105,7 +105,7 @@ The badge and icon are set per-tab via `chrome.action`:
 | Archived (either source) | Normal icon, Dusk Blue `✓` as soon as either source finds a valid snapshot |
 | Not archived | Normal icon, Steel Blue `✕` — both services answered and neither had a snapshot |
 | Non-checkable URL (non-HTTP(S), private/local, archive service, or excluded host — built-in or user-ignored) | Grey icon, no badge |
-| Services busy | Normal icon, Amber `!` when no snapshot was found and at least one service was rate-limiting or too slow (result is inconclusive) — transient, retry later |
+| Services busy | Normal icon, Amber `!` when no snapshot was found and at least one service was rate-limiting, too slow, or behind archive.today's CAPTCHA wall (result is inconclusive) — transient, retry later or solve the CAPTCHA |
 | Error | Normal icon, Red `✕` when no snapshot was found and a service hard-failed (non-transient) with neither rate-limited |
 
 ### Popup states
@@ -116,6 +116,7 @@ The badge and icon are set per-tab via `chrome.action`:
 | Archived | At least one service returned a valid snapshot; if the other service is still running, the popup shows that too |
 | Not Archived | Both services answered and neither had a snapshot — also shows "Save to…" links |
 | Services Busy | No snapshot found and at least one service was rate-limited or too slow (so the result is inconclusive), or the popup timed out after 18s. Reports what each service said (e.g. "archive.today is busy (rate-limited). Wayback Machine did not find a snapshot."); recoverable, with a **Recheck** button |
+| Human Check Needed | No snapshot found and every archive.today alias answered with its reCAPTCHA wall. The archive.today row shows **CAPTCHA required** with a **Solve** button that opens the challenge in a small popup window; once solved, the extension re-checks the page on its own and closes the window (see **archive.today CAPTCHA** below) |
 | Check Failed | No snapshot found and a service hard-failed (non-transient) with neither rate-limited — also reports per-service status |
 | No Page to Check | The active tab isn't an HTTP(S) URL, is on a private/local host, is already on an archive service, or is on a built-in excluded host |
 | Checks Disabled | The user has ignored this site; shows which rule applies and a **Re-enable on this site** link |
@@ -153,9 +154,10 @@ lookup failed.
 ### Robustness
 
 - **Fetch timeout**: Wayback calls are aborted after 10s; archive.today aliases are tried with shorter per-alias timeouts; the popup gives up after 18s and shows the recoverable **Services Busy** state.
-- **Transient-failure handling**: HTTP 429/408/425, 5xx, and timeouts are treated as transient ("busy") rather than hard errors, and retried once with a short jittered backoff on the fast endpoints (archive.today timemap, Wayback availability) — never the slow CDX call.
+- **Transient-failure handling**: HTTP 429/408/425, 5xx, and timeouts are treated as transient ("busy") rather than hard errors, and retried once with a short jittered backoff on the fast endpoints (archive.today timemap, Wayback availability) — never the slow CDX call. A 429 that carries archive.today's reCAPTCHA page is recognised as a bot wall rather than load and is never retried blindly: only a human can clear it.
 - **No overconfident "Not Archived"**: a definitive "Not Archived" requires *both* services to actually answer. If no snapshot is found and either service was rate-limited or too slow, the popup shows the recoverable **Services Busy** state instead; **Check Failed** is reserved for a hard, non-transient failure with nothing rate-limited. Both inconclusive cards name what each service reported.
-- **archive.today load**: a reachable mirror is authoritative, so its answer (snapshot or definitive "none") ends the search instead of polling all four aliases; a rate-limit stops the cascade rather than fanning out across mirrors; and archive.today's exact TimeMap runs for the page as-is and its clean canonical URL (intermediate partial variants go to Wayback only), with the on-demand wildcard search covering genuinely unpredictable variants when the popup opens.
+- **archive.today load**: a reachable mirror is authoritative, so its answer (snapshot or definitive "none") ends the search instead of polling all four aliases. The aliases share one archive but not one anti-bot policy, so a fast 429 or CAPTCHA on one alias moves on to the next (each costs a few hundred milliseconds), while a timeout — a slow shared backend — stops the cascade rather than multiplying the wait. The alias that answered most recently is tried first next time. archive.today's exact TimeMap runs for the page as-is and its clean canonical URL (intermediate partial variants go to Wayback only), with the on-demand wildcard search covering genuinely unpredictable variants when the popup opens.
+- **archive.today CAPTCHA**: when every alias is walled, the popup offers **Solve**. The service worker opens the walled TimeMap URL in a small popup window (not a tab — it is a one-off chore, and the window is closed automatically once done), pauses its own archive.today lookups so a background request cannot hand it a fresh challenge cookie mid-solve, and watches that window. The challenge page reloads the TimeMap URL once solved; on that load the worker re-runs the lookup, and if it answers, closes the window and re-checks the page. Closing the window by hand also triggers a re-check. archive.today ties the clearance to a cookie it sets (one hour by default), so the extension's archive.today requests carry cookies; the solve window, the alias it targets, and the preferred alias are kept in session storage so they survive the service worker's idle shutdowns but not a browser restart.
 - **Debouncing**: tab updates are debounced 300ms so a redirect chain only triggers one check.
 - **Tab-navigation race protection**: if the tab navigates away while a fetch is in flight, the result is dropped instead of painted onto the new page.
 - **Tab activation**: switching to a tab triggers a check (served from cache if fresh).
@@ -231,7 +233,7 @@ is-this-page-archived/
 | `tabs` | Read the URL of the active tab and react to navigation events |
 | `activeTab` | Access the current tab when the popup is opened |
 | `storage` | Hand results from the service worker to the popup via session storage, and persist user ignore rules in local storage |
-| host: `https://archive.ph/*`, `https://archive.today/*`, `https://archive.is/*`, `https://archive.md/*` | TimeMap requests to archive.today aliases and archive.today memento links |
+| host: `https://archive.ph/*`, `https://archive.today/*`, `https://archive.is/*`, `https://archive.md/*` | TimeMap requests to archive.today aliases and archive.today memento links. These requests carry the site's cookies so that a CAPTCHA solved once in the solve window also clears the extension's own lookups |
 | host: `https://web.archive.org/*` | CDX API requests and Save Page Now links |
 | host: `https://archive.org/*` | Wayback availability fallback requests |
 
