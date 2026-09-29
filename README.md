@@ -49,16 +49,33 @@ After you open a page (follow a link, enter a URL, or refresh), the service work
 The two primary lookups (TimeMap and CDX) return structured data. Wayback's has no anti-bot restrictions. archive.today's TimeMap usually has none either, but the service can put a Google reCAPTCHA wall (served as HTTP 429) in front of some of its aliases for browser-like clients; the extension detects that page, tries the other aliases, and only when every alias is walled asks the user to solve it once (see **archive.today CAPTCHA** below). The archive.today wildcard search is rate-limited, so it runs only as an on-demand fallback (see below).
 
 If the exact URL is not archived and its query string only differs by known
-tracking or decoration parameters such as `utm_*`, `_gl`, `_ga`, `fbclid`,
-`gclid`, `gad_source`, `source`, `shareType`, or Readwise Reader's `__readwise*` (e.g.
-`__readwiseLocation`), the service worker retries the lookup with those
-parameters removed. This catches shared links whose archived copy exists under
-the clean canonical URL while leaving meaningful query parameters intact.
-Substack article links also fall back from email/share URLs under `/p/...` to
-their canonical article URL when parameters such as `publication_id`, `post_id`,
-`isFreemail`, `r`, or `triedRedirect` are present. FT gift links on `ft.com`
-likewise fall back to the plain article URL, dropping their `accessToken` and
-`token` parameters.
+tracking or decoration parameters, the service worker retries the lookup with
+those parameters removed. This catches shared links whose archived copy exists
+under the clean canonical URL while leaving meaningful query parameters intact.
+Two tiers of parameters are stripped (full lists in `background.js`):
+
+- **Everywhere**: ad/analytics click IDs (`fbclid`, `gclid`, `srsltid`, `_ga`,
+  …), newsletter tokens (HubSpot `_hsenc`, Marketo `mkt_tok`, Kit
+  `ck_subscriber_id`, …), `shareType`, and whole vendor families by prefix:
+  `utm_*`, `__readwise*`, `pk_*` / `mtm_*` (Matomo), `hsa_*`, `_branch_*`.
+- **Per site**: share and gift-link parameters whose names are too generic to
+  strip everywhere (e.g. `s` is WordPress search):
+
+  | Site | Stripped |
+  |---|---|
+  | `ft.com` | `accessToken`, `token` |
+  | `x.com`, `twitter.com` | `s`, `t`, `ref_src` |
+  | `nytimes.com` | `smid`, `smtyp`, `unlocked_article_code`, `emc`, `nl`, `ugrp` |
+  | `bloomberg.com` | `accessToken`, `sref`, `srnd`, `leadSource` |
+  | `wsj.com` | `mod`, `st`, `reflink` |
+  | `washingtonpost.com` | `pwapi_token`, `itid` |
+  | `theguardian.com` | `CMP` |
+  | `medium.com` | `sk` |
+  | `reddit.com` | `share_id` |
+
+  Substack runs on custom domains, so it's matched by path instead: article
+  links under `/p/...` drop `publication_id`, `post_id`, `isFreemail`, `r`, and
+  `triedRedirect`.
 
 The reverse can also happen: the page you're on is clean, but the only archived
 copy lives under a junk-decorated URL (e.g. someone archived it as

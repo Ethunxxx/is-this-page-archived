@@ -66,29 +66,79 @@ const ARCHIVE_TODAY_CAPTCHA_SESSION_MAX_MS = 5 * 60 * 1000;
 const CACHE_TTL_MS = 60 * 60 * 1000;
 const TRANSIENT_RETRY_BASE_MS = 900;
 const TRANSIENT_RETRY_JITTER_MS = 600;
+// Tracking params that are junk on any site. Names that are short or generic
+// enough to mean something elsewhere belong in SITE_DECORATION_QUERY_PARAMS.
 const TRACKING_QUERY_PARAMS = new Set([
   "_ga",
   "_gl",
+  "_hsenc",
+  "_hsmi",
+  "ck_subscriber_id",
+  "cmpid",
   "dclid",
+  "epik",
+  "et_cid",
+  "et_rid",
   "fbclid",
   "gad_source",
   "gbraid",
   "gclid",
   "gclsrc",
+  "guccounter",
+  "guce_referrer",
+  "guce_referrer_sig",
+  "icid",
   "igshid",
+  "irclickid",
   "li_fat_id",
   "mc_cid",
   "mc_eid",
+  "mkt_tok",
+  "ml_subscriber",
+  "ml_subscriber_hash",
   "msclkid",
+  "ocid",
+  "oly_anon_id",
+  "oly_enc_id",
+  "rdt",
   "ref",
   "referrer",
+  "sccid",
   "sharetype",
   "source",
+  "srsltid",
   "ttclid",
   "twclid",
   "wbraid",
+  "wt.mc_id",
   "yclid",
 ]);
+// Vendor-namespaced families, stripped by prefix rather than enumerated:
+// utm_* (analytics), __readwise* (Readwise Reader, e.g. __readwiseLocation on
+// every link opened from Reader), pk_* / mtm_* (Matomo), hsa_* (HubSpot ads),
+// _branch_* (Branch.io deep links).
+const TRACKING_QUERY_PARAM_PREFIXES = ["utm_", "__readwise", "pk_", "mtm_", "hsa_", "_branch_"];
+// Share/gift decoration that is only junk on one site, keyed by domain (which
+// also covers its subdomains). The names are too short or generic to strip
+// everywhere ("s" is WordPress search, "token" gates content elsewhere). Gift
+// tokens (FT/Bloomberg accessToken, NYT unlocked_article_code, WaPo
+// pwapi_token) unlock the paywall but never change which article it is.
+const SITE_DECORATION_QUERY_PARAMS = new Map(
+  Object.entries({
+    "ft.com": ["accesstoken", "token"],
+    "x.com": ["s", "t", "ref_src"],
+    "twitter.com": ["s", "t", "ref_src"],
+    "nytimes.com": ["smid", "smtyp", "unlocked_article_code", "emc", "nl", "ugrp"],
+    "bloomberg.com": ["accesstoken", "sref", "srnd", "leadsource"],
+    "wsj.com": ["mod", "st", "reflink"],
+    "washingtonpost.com": ["pwapi_token", "itid"],
+    "theguardian.com": ["cmp"],
+    "medium.com": ["sk"],
+    "reddit.com": ["share_id"],
+  }).map(([domain, params]) => [domain, new Set(params)])
+);
+// Substack runs on custom domains, so it can't be keyed by host above; its
+// decoration is recognised by article path instead (see isLikelySubstackArticleUrl).
 const SUBSTACK_DECORATION_QUERY_PARAMS = new Set([
   "isfreemail",
   "post_id",
@@ -96,11 +146,6 @@ const SUBSTACK_DECORATION_QUERY_PARAMS = new Set([
   "r",
   "triedredirect",
 ]);
-// FT gift links carry a paywall access token on top of the article URL
-// (?accessToken=…&sharetype=gift&token=…). It unlocks the article but never
-// changes which article it is, so it's decoration for lookup purposes. Scoped
-// to ft.com because "token" is meaningful elsewhere.
-const FT_SHARE_QUERY_PARAMS = new Set(["accesstoken", "token"]);
 
 const cache = new Map();
 const inflight = new Map();
@@ -249,14 +294,9 @@ async function getStoredTabResult(tabId) {
 
 function isTrackingParamName(name) {
   const normalized = name.toLowerCase();
-  // utm_* (analytics) and __readwise* (Readwise Reader decoration, e.g.
-  // __readwiseLocation appended to every link opened from Reader) are
-  // vendor-namespaced junk added to arbitrary URLs with no effect on page
-  // content. Strip the whole family by prefix rather than enumerating each.
   return (
-    normalized.startsWith("utm_") ||
-    normalized.startsWith("__readwise") ||
-    TRACKING_QUERY_PARAMS.has(normalized)
+    TRACKING_QUERY_PARAMS.has(normalized) ||
+    TRACKING_QUERY_PARAM_PREFIXES.some((prefix) => normalized.startsWith(prefix))
   );
 }
 
@@ -296,32 +336,31 @@ function isLikelySubstackArticleUrl(parsed) {
   return parsed.pathname.startsWith("/p/") && hasSubstackDecorationParams(parsed);
 }
 
-function stripSubstackDecorationParams(url) {
-  return stripQueryParams(url, (name, parsed) => {
-    if (!isLikelySubstackArticleUrl(parsed)) return false;
-    return SUBSTACK_DECORATION_QUERY_PARAMS.has(name.toLowerCase());
-  });
-}
-
-function isFtHost(hostname) {
+function siteDecorationParams(hostname) {
   const h = hostname.toLowerCase();
-  return h === "ft.com" || h.endsWith(".ft.com");
+  for (const [domain, params] of SITE_DECORATION_QUERY_PARAMS) {
+    if (h === domain || h.endsWith("." + domain)) return params;
+  }
+  return null;
 }
 
-function stripFtShareParams(url) {
-  return stripQueryParams(
-    url,
-    (name, parsed) => isFtHost(parsed.hostname) && FT_SHARE_QUERY_PARAMS.has(name.toLowerCase())
-  );
+function isSiteDecorationParam(name, parsed) {
+  const normalized = name.toLowerCase();
+  if (siteDecorationParams(parsed.hostname)?.has(normalized)) return true;
+  return isLikelySubstackArticleUrl(parsed) && SUBSTACK_DECORATION_QUERY_PARAMS.has(normalized);
+}
+
+function stripSiteDecorationParams(url) {
+  return stripQueryParams(url, isSiteDecorationParam);
 }
 
 // The "same-page" identity of a URL: drop generic tracking params plus
-// site-specific decoration (Substack article params, FT gift tokens), so a
-// decorated URL and its clean form resolve to the same key. Used both to build
-// the clean lookup candidate and to decide whether an archived snapshot saved
-// under some param-variant is really the page we're asking about.
+// site-specific share/gift decoration, so a decorated URL and its clean form
+// resolve to the same key. Used both to build the clean lookup candidate and to
+// decide whether an archived snapshot saved under some param-variant is really
+// the page we're asking about.
 function samePageKey(url) {
-  return stripFtShareParams(stripSubstackDecorationParams(stripTrackingParams(url)));
+  return stripSiteDecorationParams(stripTrackingParams(url));
 }
 
 function addLookupCandidate(candidates, candidate) {
