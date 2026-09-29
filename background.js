@@ -122,19 +122,24 @@ const TRACKING_QUERY_PARAM_PREFIXES = ["utm_", "__readwise", "pk_", "mtm_", "hsa
 // also covers its subdomains). The names are too short or generic to strip
 // everywhere ("s" is WordPress search, "token" gates content elsewhere). Gift
 // tokens (FT/Bloomberg accessToken, NYT unlocked_article_code, WaPo
-// pwapi_token) unlock the paywall but never change which article it is.
+// pwapi_token) unlock the paywall but never change which article it is. NYT's
+// "pagewanted" is deliberately absent: it changes the content shown.
 const SITE_DECORATION_QUERY_PARAMS = new Map(
   Object.entries({
-    "ft.com": ["accesstoken", "token"],
-    "x.com": ["s", "t", "ref_src"],
-    "twitter.com": ["s", "t", "ref_src"],
-    "nytimes.com": ["smid", "smtyp", "unlocked_article_code", "emc", "nl", "ugrp"],
-    "bloomberg.com": ["accesstoken", "sref", "srnd", "leadsource"],
-    "wsj.com": ["mod", "st", "reflink"],
-    "washingtonpost.com": ["pwapi_token", "itid"],
+    "ft.com": ["accesstoken", "token", "segmentid", "ftcamp"],
+    "x.com": ["s", "t", "ref_src", "ref_url"],
+    "twitter.com": ["s", "t", "ref_src", "ref_url"],
+    "nytimes.com": [
+      "smid", "smtyp", "unlocked_article_code", "emc", "nl", "ugrp", "_r", "pgtype",
+      "module", "action", "region", "hp", "wt.nav", "src", "partner",
+      "contentcollection", "clicksource", "rref",
+    ],
+    "bloomberg.com": ["accesstoken", "sref", "srnd", "leadsource", "embedded-checkout"],
+    "wsj.com": ["mod", "st", "reflink", "mg"],
+    "washingtonpost.com": ["pwapi_token", "itid", "tid", "hpid", "postshare", "wprss", "wpisrc", "wpmm"],
     "theguardian.com": ["cmp"],
     "medium.com": ["sk"],
-    "reddit.com": ["share_id", "rdt"],
+    "reddit.com": ["share_id", "rdt", "st", "sh"],
   }).map(([domain, params]) => [domain, new Set(params)])
 );
 // Substack runs on custom domains, so it can't be keyed by host above; its

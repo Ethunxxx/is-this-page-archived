@@ -63,15 +63,15 @@ Two tiers of parameters are stripped (full lists in `background.js`):
 
   | Site | Stripped |
   |---|---|
-  | `ft.com` | `accessToken`, `token` |
-  | `x.com`, `twitter.com` | `s`, `t`, `ref_src` |
-  | `nytimes.com` | `smid`, `smtyp`, `unlocked_article_code`, `emc`, `nl`, `ugrp` |
-  | `bloomberg.com` | `accessToken`, `sref`, `srnd`, `leadSource` |
-  | `wsj.com` | `mod`, `st`, `reflink` |
-  | `washingtonpost.com` | `pwapi_token`, `itid` |
+  | `ft.com` | `accessToken`, `token`, `segmentId`, `ftcamp` |
+  | `x.com`, `twitter.com` | `s`, `t`, `ref_src`, `ref_url` |
+  | `nytimes.com` | `smid`, `smtyp`, `unlocked_article_code`, `emc`, `nl`, `ugrp`, `_r`, `pgtype`, `module`, `action`, `region`, `hp`, `WT.nav`, `src`, `partner`, `contentCollection`, `clickSource`, `rref` (not `pagewanted`, which changes the page shown) |
+  | `bloomberg.com` | `accessToken`, `sref`, `srnd`, `leadSource`, `embedded-checkout` |
+  | `wsj.com` | `mod`, `st`, `reflink`, `mg` |
+  | `washingtonpost.com` | `pwapi_token`, `itid`, `tid`, `hpid`, `postshare`, `wprss`, `wpisrc`, `wpmm` |
   | `theguardian.com` | `CMP` |
   | `medium.com` | `sk` |
-  | `reddit.com` | `share_id`, `rdt` |
+  | `reddit.com` | `share_id`, `rdt`, `st`, `sh` |
 
   Substack runs on custom domains, so it's matched by path instead: article
   links under `/p/...` drop `publication_id`, `post_id`, `isFreemail`, `r`, and
