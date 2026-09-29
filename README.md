@@ -71,7 +71,7 @@ Two tiers of parameters are stripped (full lists in `background.js`):
   | `washingtonpost.com` | `pwapi_token`, `itid` |
   | `theguardian.com` | `CMP` |
   | `medium.com` | `sk` |
-  | `reddit.com` | `share_id` |
+  | `reddit.com` | `share_id`, `rdt` |
 
   Substack runs on custom domains, so it's matched by path instead: article
   links under `/p/...` drop `publication_id`, `post_id`, `isFreemail`, `r`, and

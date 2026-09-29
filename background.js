@@ -100,7 +100,7 @@ const TRACKING_QUERY_PARAMS = new Set([
   "ocid",
   "oly_anon_id",
   "oly_enc_id",
-  "rdt",
+  "rdt_cid",
   "ref",
   "referrer",
   "sccid",
@@ -134,7 +134,7 @@ const SITE_DECORATION_QUERY_PARAMS = new Map(
     "washingtonpost.com": ["pwapi_token", "itid"],
     "theguardian.com": ["cmp"],
     "medium.com": ["sk"],
-    "reddit.com": ["share_id"],
+    "reddit.com": ["share_id", "rdt"],
   }).map(([domain, params]) => [domain, new Set(params)])
 );
 // Substack runs on custom domains, so it can't be keyed by host above; its
