@@ -82,6 +82,7 @@ const TRACKING_QUERY_PARAMS = new Set([
   "msclkid",
   "ref",
   "referrer",
+  "sharetype",
   "source",
   "ttclid",
   "twclid",
@@ -95,6 +96,11 @@ const SUBSTACK_DECORATION_QUERY_PARAMS = new Set([
   "r",
   "triedredirect",
 ]);
+// FT gift links carry a paywall access token on top of the article URL
+// (?accessToken=…&sharetype=gift&token=…). It unlocks the article but never
+// changes which article it is, so it's decoration for lookup purposes. Scoped
+// to ft.com because "token" is meaningful elsewhere.
+const FT_SHARE_QUERY_PARAMS = new Set(["accesstoken", "token"]);
 
 const cache = new Map();
 const inflight = new Map();
@@ -297,13 +303,25 @@ function stripSubstackDecorationParams(url) {
   });
 }
 
-// The "same-page" identity of a URL: drop both generic tracking params and
-// Substack's article-decoration params, so a decorated URL and its clean form
-// resolve to the same key. Used both to build the clean lookup candidate and to
-// decide whether an archived snapshot saved under some param-variant is really
-// the page we're asking about.
+function isFtHost(hostname) {
+  const h = hostname.toLowerCase();
+  return h === "ft.com" || h.endsWith(".ft.com");
+}
+
+function stripFtShareParams(url) {
+  return stripQueryParams(
+    url,
+    (name, parsed) => isFtHost(parsed.hostname) && FT_SHARE_QUERY_PARAMS.has(name.toLowerCase())
+  );
+}
+
+// The "same-page" identity of a URL: drop generic tracking params plus
+// site-specific decoration (Substack article params, FT gift tokens), so a
+// decorated URL and its clean form resolve to the same key. Used both to build
+// the clean lookup candidate and to decide whether an archived snapshot saved
+// under some param-variant is really the page we're asking about.
 function samePageKey(url) {
-  return stripSubstackDecorationParams(stripTrackingParams(url));
+  return stripFtShareParams(stripSubstackDecorationParams(stripTrackingParams(url)));
 }
 
 function addLookupCandidate(candidates, candidate) {

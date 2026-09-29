@@ -50,13 +50,15 @@ The two primary lookups (TimeMap and CDX) return structured data. Wayback's has 
 
 If the exact URL is not archived and its query string only differs by known
 tracking or decoration parameters such as `utm_*`, `_gl`, `_ga`, `fbclid`,
-`gclid`, `gad_source`, `source`, or Readwise Reader's `__readwise*` (e.g.
+`gclid`, `gad_source`, `source`, `shareType`, or Readwise Reader's `__readwise*` (e.g.
 `__readwiseLocation`), the service worker retries the lookup with those
 parameters removed. This catches shared links whose archived copy exists under
 the clean canonical URL while leaving meaningful query parameters intact.
 Substack article links also fall back from email/share URLs under `/p/...` to
 their canonical article URL when parameters such as `publication_id`, `post_id`,
-`isFreemail`, `r`, or `triedRedirect` are present.
+`isFreemail`, `r`, or `triedRedirect` are present. FT gift links on `ft.com`
+likewise fall back to the plain article URL, dropping their `accessToken` and
+`token` parameters.
 
 The reverse can also happen: the page you're on is clean, but the only archived
 copy lives under a junk-decorated URL (e.g. someone archived it as
