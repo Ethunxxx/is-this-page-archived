@@ -57,6 +57,9 @@ const INACTIVE_ICON_PATHS = {
 };
 const FETCH_TIMEOUT_MS = 10000;
 const ARCHIVE_TODAY_FETCH_TIMEOUT_MS = 5000;
+// Off the critical path (see probeArchiveTodaySnapshot), so it can afford to
+// outlast most cold snapshot renders.
+const ARCHIVE_TODAY_SNAPSHOT_PROBE_TIMEOUT_MS = 10000;
 // archive.today sometimes answers 429 with a Google reCAPTCHA page rather than
 // a plain rate limit. That needs a human, so it gets its own status and flow
 // (see the CAPTCHA section near the end of this file).
@@ -280,6 +283,17 @@ function urlsMatch(a, b) {
   return normalizeUrl(a) === normalizeUrl(b);
 }
 
+// Whether an archived capture is a capture of the page we asked about. Unlike
+// urlsMatch this ignores the scheme: both archives file http and https
+// captures of a URL together, and the oldest capture of any long-lived page
+// predates its move to https (archive.today lists it as http://host/..., the
+// Wayback CDX as http://host:80/...). Requiring the scheme to match made such
+// pages look unarchived. Tab and cache identity stay scheme-exact (urlsMatch).
+function isCaptureOf(capturedUrl, pageUrl) {
+  const key = (u) => normalizeUrl(u).replace(/^https?:/, "");
+  return key(capturedUrl) === key(pageUrl);
+}
+
 function storedResultApplies(result, url) {
   return (
     result &&
@@ -413,6 +427,67 @@ function isArchiveTodayHost(urlStr) {
 function archiveTodayMementoUrlOnHost(mementoUrl, host) {
   const m = mementoUrl.match(/^https?:\/\/[^/]+(\/.*)$/);
   return m ? `https://${host}${m[1]}` : mementoUrl;
+}
+
+// Does this alias serve the snapshot page? Three answers, because slow is not
+// broken: archive.today renders a recent snapshot cold on first access (6-12s
+// measured), while a real refusal (404, a 429 wall, 5xx, a dead connection)
+// comes back within a few hundred ms.
+//   "served"   the page answered 2xx
+//   "failed"   a definite refusal
+//   "unknown"  no verdict: too slow to tell, or the alias forwards to a host
+//              outside our host permissions (archive.md -> archive.li), which
+//              a tab follows fine but a fetch from here is not allowed to read
+async function probeArchiveTodaySnapshot(url) {
+  const { signal, clearTimer } = makeAbortable(ARCHIVE_TODAY_SNAPSHOT_PROBE_TIMEOUT_MS);
+  const request = (redirect) =>
+    fetch(url, {
+      cache: "no-store",
+      credentials: "include",
+      redirect,
+      headers: { Range: "bytes=0-0" },
+      signal,
+    });
+  const discardBody = async (resp) => {
+    if (resp.body) await resp.body.cancel().catch(() => {});
+  };
+  try {
+    let resp;
+    try {
+      resp = await request("follow");
+    } catch {
+      if (signal.aborted) return "unknown";
+      // A network-level failure. Tell a dead alias apart from one that merely
+      // forwards somewhere we may not read, by asking again without following.
+      resp = await request("manual");
+      if (resp.type === "opaqueredirect") return "unknown";
+    }
+    await discardBody(resp);
+    return resp.ok ? "served" : "failed";
+  } catch {
+    return signal.aborted ? "unknown" : "failed";
+  } finally {
+    clearTimer();
+  }
+}
+
+// Choose the alias the snapshot link should open on. It starts on the alias
+// that answered the timemap and moves only when that alias definitely refuses
+// the snapshot page, to the first alias that does not. An alias that is merely
+// slow keeps the link: hunting further would swap a link that very likely
+// works for one we know no more about. `verified` records whether the choice
+// rests on a real answer, so an inconclusive check is repeated next time.
+async function resolveArchiveTodaySnapshotUrl(mementoUrl) {
+  const current = hostnameOf(mementoUrl);
+  const hosts = [current, ...archiveTodayHostOrder().filter((host) => host !== current)];
+  for (const host of hosts) {
+    const candidate = archiveTodayMementoUrlOnHost(mementoUrl, host);
+    const verdict = await probeArchiveTodaySnapshot(candidate);
+    if (verdict !== "failed") return { url: candidate, verified: verdict === "served" };
+  }
+  // Every alias refused: there is nothing better to offer, and no point asking
+  // them all again on the next popup open.
+  return { url: mementoUrl, verified: true };
 }
 
 // ---- archive.today mirror preference + CAPTCHA session ----------------------
@@ -555,7 +630,7 @@ async function fetchArchiveTodayTimemap(url, host) {
     // match exists. Per RFC 7089 the response advertises the URL it is
     // really about via rel="original"; reject anything that doesn't match.
     const originalMatch = text.match(/<([^>]+)>;\s*rel="original"/);
-    if (originalMatch && !urlsMatch(originalMatch[1], url)) return null;
+    if (originalMatch && !isCaptureOf(originalMatch[1], url)) return null;
 
     // Parse each "<url>; attrs" entry independently rather than assuming a
     // fixed attribute order. The rel attribute is a space-separated token
@@ -581,7 +656,7 @@ async function fetchArchiveTodayTimemap(url, host) {
     // archive.today host AND embed the URL we asked for.
     if (!isArchiveTodayHost(firstMemento.url)) return null;
     const embedded = extractOriginalFromMementoUrl(firstMemento.url);
-    if (embedded && !urlsMatch(embedded, url)) return null;
+    if (embedded && !isCaptureOf(embedded, url)) return null;
 
     return {
       ...firstMemento,
@@ -672,7 +747,7 @@ function oldestSamePageArchivedUrl(html, target) {
   for (const m of html.matchAll(re)) {
     const original = m[1];
     if (original.includes("*")) continue;
-    if (!urlsMatch(samePageKey(original), target)) continue;
+    if (!isCaptureOf(samePageKey(original), target)) continue;
     // Rows are listed newest→oldest, so the last match is the oldest snapshot.
     oldest = original;
   }
@@ -721,7 +796,7 @@ async function checkWaybackCdx(url) {
     if (!Array.isArray(data) || data.length < 2) return null;
 
     const [timestamp, original] = data[1];
-    if (!urlsMatch(original, url)) return null;
+    if (!isCaptureOf(original, url)) return null;
 
     return {
       url: `https://web.archive.org/web/${timestamp}/${original}`,
@@ -750,7 +825,7 @@ async function checkWaybackAvailable(url) {
     if (!closest?.available || !closest.url || !closest.timestamp) return null;
 
     const original = extractOriginalFromWaybackUrl(closest.url);
-    if (original && !urlsMatch(original, url)) return null;
+    if (original && !isCaptureOf(original, url)) return null;
 
     return {
       url: closest.url.replace(/^http:\/\//, "https://"),
@@ -807,7 +882,7 @@ async function checkWaybackPrefix(url) {
     for (const row of data.slice(1)) {
       const [timestamp, original] = row;
       if (!timestamp || !original) continue;
-      if (!urlsMatch(samePageKey(original), target)) continue;
+      if (!isCaptureOf(samePageKey(original), target)) continue;
       if (!best || timestamp < best.timestamp) best = { timestamp, original };
     }
     if (!best) return null;
@@ -1284,7 +1359,92 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     );
     return true;
   }
+  // The popup calls this once a result with an archive.today snapshot is on
+  // screen, to confirm the linked alias really serves the snapshot page and
+  // move the link if it does not. Async reply → return true.
+  if (
+    msg.type === "verifyArchiveTodaySnapshot" &&
+    typeof msg.url === "string" &&
+    typeof msg.tabId === "number"
+  ) {
+    verifyArchiveTodaySnapshot(msg.url, msg.tabId).then(
+      (memento) => sendResponse(memento ? { archiveToday: memento } : null),
+      () => sendResponse(null)
+    );
+    return true;
+  }
 });
+
+async function searchArchiveTodayVariants(url, tabId) {
+  if (!isCheckableUrl(url) || isUserIgnored(url)) return null;
+  const memento = await checkArchiveTodayPrefix(url).catch(() => null);
+  // Await the merge so the in-memory cache write completes before the message
+  // handler resolves — otherwise the worker can go idle after sendResponse and
+  // drop the badge/cache update.
+  if (memento) await applyArchiveTodayMemento(tabId, url, memento);
+  return memento;
+}
+
+// The lookup links the snapshot on the alias that answered the timemap without
+// loading the snapshot page, because that load can take archive.today 6-12s.
+// This is the deferred half: it runs on demand (popup open), after the result
+// is already shown, so it costs the user no waiting, and it only ever runs for
+// a page someone is actually looking at the link for.
+async function verifyArchiveTodaySnapshot(url, tabId) {
+  if (!isCheckableUrl(url) || isUserIgnored(url)) return null;
+  const state = await loadArchiveTodayState();
+  // Same rule as the lookup: stay off archive.today while a CAPTCHA is being
+  // solved, so we can't collect a fresh challenge cookie mid-solve.
+  if (captchaSessionActive(state.captchaSession)) return null;
+  const memento = (await currentResultFor(tabId, url))?.archiveToday;
+  if (!memento?.url || !isArchiveTodayHost(memento.url)) return null;
+  if (memento.verified) return memento;
+  const checked = { ...memento, ...(await resolveArchiveTodaySnapshotUrl(memento.url)) };
+  if (checked.url !== memento.url || checked.verified) {
+    await applyArchiveTodayMemento(tabId, url, checked);
+  }
+  return checked;
+}
+
+// The result this tab is showing for the URL, falling back to the shared cache.
+async function currentResultFor(tabId, url) {
+  const stored = await getStoredTabResult(tabId).catch(() => null);
+  return stored && storedResultApplies(stored, url) ? stored : cacheGet(url)?.value || null;
+}
+
+// Fold an archive.today snapshot (a variant found by the wildcard search, or a
+// link moved to a working alias) into the cached + stored result, so the badge
+// is right and a reopened popup shows it without redoing the work.
+async function applyArchiveTodayMemento(tabId, url, memento) {
+  const cached = cacheGet(url);
+  const base = (await currentResultFor(tabId, url)) || { pageUrl: url, services: {} };
+  const merged = mergeArchiveTodayMemento(base, memento, url);
+  // Keep the original check time so this doesn't extend the cache's life, and
+  // don't start caching a result that was left uncached because the other
+  // service failed.
+  if (merged.cacheable !== false) {
+    cacheSet(url, { value: merged, cachedAt: cached?.cachedAt ?? Date.now() });
+  }
+  silent(applyResultIfStillCurrent(tabId, url, merged));
+}
+
+function mergeArchiveTodayMemento(result, memento, url) {
+  const services = { ...(result.services || {}) };
+  services.archiveToday = "found";
+  if (!services.wayback) services.wayback = result.wayback ? "found" : "not_found";
+  const merged = {
+    ...result,
+    archived: true,
+    archiveToday: memento,
+    checking: false,
+    services,
+    pageUrl: url,
+  };
+  // We have a snapshot now, so this is no longer an all-services-failed result.
+  delete merged.error;
+  delete merged.unavailable;
+  return merged;
+}
 
 // ---- archive.today CAPTCHA solve window -------------------------------------
 //

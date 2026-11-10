@@ -226,6 +226,10 @@ function renderUniformStatus(status) {
 
 let activeCheck = null;
 let variantSearchActive = false;
+let snapshotCheckActive = false;
+// Bumped by every performCheck, so a late reply to a follow-up request made
+// for an earlier check can tell it has been superseded.
+let checkGeneration = 0;
 let currentTab = null;
 
 // archive.today is showing its reCAPTCHA wall. The service worker opens it in
@@ -248,8 +252,11 @@ function openCaptchaWindow(btn) {
 function performCheck(tab, { force }) {
   // Tear down any previous check so a Recheck click can't double-listen.
   if (activeCheck) activeCheck.cancel();
-  // A fresh check (including a Recheck) may warrant a new variant search.
+  // A fresh check (including a Recheck) may warrant a new variant search and
+  // a new snapshot-link check.
   variantSearchActive = false;
+  snapshotCheckActive = false;
+  checkGeneration += 1;
 
   const key = `tab_${tab.id}`;
   const me = Symbol("check");
@@ -273,6 +280,7 @@ function performCheck(tab, { force }) {
     if (result) {
       renderResult(result);
       maybeSearchArchiveTodayVariants(tab, result);
+      maybeVerifyArchiveTodaySnapshot(tab, result);
     } else if (timedOut) {
       // Nothing landed in time — almost always the services being slow, not a
       // broken extension. Show the recoverable "busy" state, not a hard error.
@@ -363,12 +371,41 @@ function maybeSearchArchiveTodayVariants(tab, result) {
     .sendMessage({ type: "searchArchiveTodayVariants", tabId: tab.id, url: tab.url })
     .then((resp) => {
       if (resp && resp.archiveToday) {
-        renderResult(mergeArchiveTodayIntoResult(result, resp.archiveToday));
+        const merged = mergeArchiveTodayIntoResult(result, resp.archiveToday);
+        renderResult(merged);
+        maybeVerifyArchiveTodaySnapshot(tab, merged);
       } else {
         revert();
       }
     })
     .catch(revert);
+}
+
+// The archive.today link points at the mirror that answered the lookup, which
+// is not proof that this mirror serves the snapshot page itself. Loading that
+// page can take archive.today 6-12s, so the lookup does not wait for it:
+// the link is shown at once and this asks the service worker to check it
+// afterwards. Only a definite refusal moves the link to another mirror; a slow
+// answer leaves it alone. Fires at most once per check, and not at all for a
+// link that has already been checked.
+function maybeVerifyArchiveTodaySnapshot(tab, result) {
+  if (snapshotCheckActive) return;
+  const memento = result.archiveToday;
+  if (!memento || memento.verified) return;
+
+  snapshotCheckActive = true;
+  const generation = checkGeneration;
+  chrome.runtime
+    .sendMessage({ type: "verifyArchiveTodaySnapshot", tabId: tab.id, url: tab.url })
+    .then((resp) => {
+      // A Recheck started meanwhile owns the display now.
+      if (generation !== checkGeneration) return;
+      const checked = resp && resp.archiveToday;
+      if (checked && checked.url !== memento.url) {
+        renderResult(mergeArchiveTodayIntoResult(result, checked));
+      }
+    })
+    .catch(() => {});
 }
 
 function withArchiveTodayChecking(result) {
