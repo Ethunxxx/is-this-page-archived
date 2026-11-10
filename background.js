@@ -589,9 +589,19 @@ async function checkArchiveToday(url) {
 // Google reCAPTCHA widget. A plain rate limit has no such body.
 async function isArchiveTodayCaptchaResponse(resp) {
   if (resp.status !== 429) return false;
-  if (!/text\/html/i.test(resp.headers.get("content-type") || "")) return false;
-  const html = await resp.text().catch(() => "");
+  if (!isHtmlResponse(resp)) return false;
+  return isArchiveTodayCaptchaHtml(await resp.text().catch(() => ""));
+}
+
+// The wall does not always come as a 429: the wildcard search has been seen
+// serving the very same page with a 200. So a body we are about to parse is
+// also checked for it. Genuine result pages carry none of these markers.
+function isArchiveTodayCaptchaHtml(html) {
   return /g-recaptcha|chk_captcha|complete the security check/i.test(html);
+}
+
+function isHtmlResponse(resp) {
+  return /text\/html/i.test(resp.headers.get("content-type") || "");
 }
 
 async function fetchArchiveTodayTimemap(url, host) {
@@ -624,6 +634,13 @@ async function fetchArchiveTodayTimemap(url, host) {
     if (!resp.ok) throw transientError(`archive.today HTTP ${resp.status}`);
 
     const text = await resp.text();
+
+    // Not observed on the timemap, but the same wall has come back with a 200
+    // from the wildcard search. A timemap is never HTML, so an HTML body with
+    // the wall's markers is the wall, not an answer of "no snapshot".
+    if (isHtmlResponse(resp) && isArchiveTodayCaptchaHtml(text)) {
+      throw captchaError(host, challengeUrl);
+    }
 
     // archive.today's timemap can return mementos for a different URL
     // than the one requested (typically the host root) when no exact
@@ -728,6 +745,12 @@ async function fetchArchiveTodayWildcard(prefixBase, target, host) {
     if (!resp.ok) throw transientError(`archive.today search HTTP ${resp.status}`);
 
     const html = await resp.text();
+    // A wall served with a 200 would otherwise parse as a results page with no
+    // rows: a silent "no variant", and no attempt on the other aliases, which
+    // are walled independently of this one.
+    if (isArchiveTodayCaptchaHtml(html)) {
+      throw captchaError(host, archiveTodayChallengeUrl(host, prefixBase));
+    }
     return oldestSamePageArchivedUrl(html, target);
   } catch (err) {
     clearTimer();
